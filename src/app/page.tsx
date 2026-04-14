@@ -1,5 +1,5 @@
-import SpreadsheetGrid from "@/components/SpreadsheetGrid"
+import SpreadsheetGridClient from "@/components/SpreadsheetGridClient"
 
 export default function Home() {
-  return <SpreadsheetGrid />
+  return <SpreadsheetGridClient />
 }
