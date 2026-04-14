@@ -1,33 +1,35 @@
 "use client"
 
-import React, { useState, useMemo, useRef, useEffect } from "react"
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { ContextMenu } from "./ContextMenu"
 import { ScheduleDialog, type ProcessName, type DialogFormData } from "./ScheduleDialog"
 import { BarTooltip, type TooltipBarInfo } from "./BarTooltip"
 
-/* ─── 定数 ──────────────────────────────────────── */
-const COLS        = 120   // 約4ヶ月
+/* ─── 固定定数 ──────────────────────────────────────── */
 const CELL_SIZE   = 20
 const ROW_HDR_W   = 64
 const HDR_H       = 20
 const DATA_TOP    = HDR_H * 3
 const MIN_ROWS    = 3
-const BUFFER_ROWS = 12   // 上下バッファ行数
+const BUFFER_ROWS = 12
 
-/* ─── 日付 ──────────────────────────────────────── */
-function generateDates(): Date[] {
+/* ─── デフォルト値 ──────────────────────────────────── */
+const DEFAULT_MONTHS = 4
+const DEFAULT_COUNT  = 1000
+
+/* ─── 日付生成 (月数指定) ───────────────────────────── */
+function generateDates(months: number): Date[] {
   const base = new Date(); base.setHours(0, 0, 0, 0)
-  return Array.from({ length: COLS }, (_, i) => {
+  const end = new Date(base)
+  end.setMonth(end.getMonth() + months)
+  const totalDays = Math.round((end.getTime() - base.getTime()) / 86400000)
+  return Array.from({ length: totalDays }, (_, i) => {
     const d = new Date(base); d.setDate(base.getDate() + i); return d
   })
 }
-const DATES = generateDates()
-const WEEKEND_COLS = new Set(DATES.map((d, i) => (d.getDay() === 0 || d.getDay() === 6) ? i : -1).filter(i => i >= 0))
-function colToDate(col: number): Date { return DATES[Math.max(0, Math.min(COLS - 1, col))] }
-function dateToCol(date: Date) { return Math.round((date.getTime() - DATES[0].getTime()) / 86400000) }
 
-/* ─── 固定データ ─────────────────────────────────── */
-const DEVICES = Array.from({ length: 100 }, (_, i) => ({ id: `d${i+1}`, name: `装置${i+1}` }))
+/* ─── 固定データ ─────────────────────────────────────── */
+const DEVICES   = Array.from({ length: 100 }, (_, i) => ({ id: `d${i+1}`, name: `装置${i+1}` }))
 const ASSIGNEES = ["山田太郎", "鈴木花子", "田中一郎", "佐藤美咲", "高橋健太"]
 const PROCESS_COLOR: Record<ProcessName, { bg: string; fg: string }> = {
   "工程A": { bg: "#3b82f6", fg: "#fff" }, "工程B": { bg: "#10b981", fg: "#fff" },
@@ -36,7 +38,7 @@ const PROCESS_COLOR: Record<ProcessName, { bg: string; fg: string }> = {
 const DEVICE_BG = ["#f8fafc","#f0f9ff","#fefce8","#fdf4ff","#f0fdf4",
                    "#fff7ed","#ecfdf5","#fef2f2","#f5f3ff","#f0fdfa"]
 
-/* ─── 型 ────────────────────────────────────────── */
+/* ─── 型 ────────────────────────────────────────────── */
 interface BarDef {
   id: string; deviceId: string; process: ProcessName
   startCol: number; endCol: number; assignee: string
@@ -53,16 +55,15 @@ type DialogState =
   | { mode: "edit"; barId: string }
 interface TooltipState { barId: string; anchorX: number; anchorY: number }
 
-/* ─── サンプルデータ生成 (100装置×1000件) ─────────── */
-// シード付き LCG 擬似乱数 — Math.random() の代わりに使用して決定論的にする
+/* ─── サンプルデータ生成 ─────────────────────────────── */
 function makeLCG(seed: number) {
   let s = seed >>> 0
   return () => { s = (Math.imul(1664525, s) + 1013904223) >>> 0; return s / 4294967296 }
 }
 
-function generateSampleBars(): BarDef[] {
+function generateSampleBars(count: number, cols: number): BarDef[] {
   const procs: ProcessName[] = ["工程A", "工程B", "検査", "出荷"]
-  const rand = makeLCG(42)   // 固定シード → 毎回同じデータ
+  const rand = makeLCG(42)
   const bars: BarDef[] = []
   let id = 0
   for (const dev of DEVICES) {
@@ -70,19 +71,18 @@ function generateSampleBars(): BarDef[] {
     for (let j = 0; j < 10; j++) {
       const proc = procs[j % 4]
       const len = 3 + Math.floor(rand() * 12)
-      const sc = Math.min(col, COLS - 2)
-      const ec = Math.min(sc + len, COLS - 1)
+      const sc = Math.min(col, cols - 2)
+      const ec = Math.min(sc + len, cols - 1)
       bars.push({ id: `s${++id}`, deviceId: dev.id, process: proc,
         startCol: sc, endCol: ec, assignee: ASSIGNEES[id % ASSIGNEES.length] })
       col = ec + 1 + Math.floor(rand() * 5)
-      if (col >= COLS) break
+      if (col >= cols) break
     }
   }
-  return bars.slice(0, 1000)
+  return bars.slice(0, count)
 }
-const INITIAL_BARS = generateSampleBars()
 
-/* ─── レイアウト計算 ─────────────────────────────── */
+/* ─── レイアウト計算 ─────────────────────────────────── */
 function computeLayout(bars: BarDef[]): { placedBars: PlacedBar[]; rowMetas: RowMeta[]; totalRows: number } {
   const placedBars: PlacedBar[] = []
   const rowMetas: RowMeta[] = []
@@ -105,29 +105,64 @@ function computeLayout(bars: BarDef[]): { placedBars: PlacedBar[]; rowMetas: Row
   return { placedBars, rowMetas, totalRows: currentRow }
 }
 
-/* ─── コンポーネント ──────────────────────────────── */
+/* ─── コンポーネント ──────────────────────────────────── */
 export default function SpreadsheetGrid() {
-  /* ── DOM refs (直接操作 → 再レンダリングなし) ── */
-  const containerRef       = useRef<HTMLDivElement>(null)
-  const selCellRef         = useRef<HTMLDivElement>(null)
-  const dragRectRef        = useRef<HTMLDivElement>(null)
-  const dragSelRef         = useRef<DragSel | null>(null)
-  const selectedCellRef    = useRef<{ row: number; col: number } | null>(null)
-  const rectCacheRef       = useRef<DOMRect | null>(null)
+  /* ── ツールバー入力値 (フォーム用) ── */
+  const [inputMonths, setInputMonths] = useState(DEFAULT_MONTHS)
+  const [inputCount,  setInputCount ] = useState(DEFAULT_COUNT)
 
-  /* ── React state (再レンダリングが必要なもののみ) ── */
-  const [bars,          setBars         ] = useState<BarDef[]>(INITIAL_BARS)
-  const [selectedBarIds,setSelectedBarIds] = useState<Set<string>>(new Set())
-  const [copiedBar,     setCopiedBar    ] = useState<BarDef | null>(null)
-  const [contextMenu,   setContextMenu  ] = useState<ContextMenuState | null>(null)
-  const [dialog,        setDialog       ] = useState<DialogState | null>(null)
-  const [tooltip,       setTooltip      ] = useState<TooltipState | null>(null)
-  /* 仮想スクロール: 表示行範囲のみ */
-  const [visibleRows,   setVisibleRows  ] = useState({ start: 0, end: 79 })
+  /* ── 適用済み値 (実際の描画に使用) ── */
+  const [appliedMonths, setAppliedMonths] = useState(DEFAULT_MONTHS)
+  const [appliedCount,  setAppliedCount ] = useState(DEFAULT_COUNT)
+
+  /* ── 日付・列数 (適用月数から導出) ── */
+  const dates = useMemo(() => generateDates(appliedMonths), [appliedMonths])
+  const cols  = dates.length
+  const weekendCols = useMemo(
+    () => new Set(dates.map((d, i) => (d.getDay() === 0 || d.getDay() === 6) ? i : -1).filter(i => i >= 0)),
+    [dates]
+  )
+
+  /* ── 日付 ↔ 列変換 ── */
+  const colToDate = useCallback((col: number): Date => dates[Math.max(0, Math.min(cols - 1, col))], [dates, cols])
+  const dateToCol = useCallback((date: Date) => Math.round((date.getTime() - dates[0].getTime()) / 86400000), [dates])
+
+  /* ── DOM refs (直接操作 → 再レンダリングなし) ── */
+  const containerRef    = useRef<HTMLDivElement>(null)
+  const selCellRef      = useRef<HTMLDivElement>(null)
+  const dragRectRef     = useRef<HTMLDivElement>(null)
+  const dragSelRef      = useRef<DragSel | null>(null)
+  const selectedCellRef = useRef<{ row: number; col: number } | null>(null)
+  const rectCacheRef    = useRef<DOMRect | null>(null)
+
+  /* ── React state ── */
+  const [bars,           setBars          ] = useState<BarDef[]>(() => generateSampleBars(DEFAULT_COUNT, generateDates(DEFAULT_MONTHS).length))
+  const [selectedBarIds, setSelectedBarIds] = useState<Set<string>>(new Set())
+  const [copiedBar,      setCopiedBar     ] = useState<BarDef | null>(null)
+  const [contextMenu,    setContextMenu   ] = useState<ContextMenuState | null>(null)
+  const [dialog,         setDialog        ] = useState<DialogState | null>(null)
+  const [tooltip,        setTooltip       ] = useState<TooltipState | null>(null)
+  const [visibleRows,    setVisibleRows   ] = useState({ start: 0, end: 79 })
+
+  /* ── 適用ボタン ── */
+  const handleApply = () => {
+    const months = Math.max(1, Math.min(24, inputMonths))
+    const count  = Math.max(0, Math.min(5000, inputCount))
+    setInputMonths(months)
+    setInputCount(count)
+    setAppliedMonths(months)
+    setAppliedCount(count)
+  }
+
+  /* ── 適用値変化時にサンプルデータ再生成 ── */
+  useEffect(() => {
+    setBars(generateSampleBars(appliedCount, cols))
+    setSelectedBarIds(new Set())
+    setCopiedBar(null)
+  }, [appliedCount, cols])
 
   const { placedBars, rowMetas, totalRows } = useMemo(() => computeLayout(bars), [bars])
 
-  /* totalRows 変化時に visibleRows を補正 */
   useEffect(() => {
     setVisibleRows(prev => ({ start: prev.start, end: Math.min(totalRows - 1, prev.end) }))
   }, [totalRows])
@@ -146,49 +181,47 @@ export default function SpreadsheetGrid() {
     if (relX < ROW_HDR_W || relY < DATA_TOP) return null
     const col = Math.floor((relX + c.scrollLeft - ROW_HDR_W) / CELL_SIZE)
     const row = Math.floor((relY + c.scrollTop  - DATA_TOP ) / CELL_SIZE)
-    if (col < 0 || col >= COLS || row < 0 || row >= totalRows) return null
+    if (col < 0 || col >= cols || row < 0 || row >= totalRows) return null
     return { row, col }
   }
 
-  /* 選択セルオーバーレイを直接 DOM 更新 */
   const showSelCell = (row: number, col: number) => {
     selectedCellRef.current = { row, col }
     const el = selCellRef.current; if (!el) return
     el.style.display = "block"
-    el.style.left   = `${ROW_HDR_W + col * CELL_SIZE}px`
-    el.style.top    = `${DATA_TOP  + row * CELL_SIZE}px`
-    el.style.width  = `${CELL_SIZE}px`
-    el.style.height = `${CELL_SIZE}px`
+    el.style.left    = `${ROW_HDR_W + col * CELL_SIZE}px`
+    el.style.top     = `${DATA_TOP  + row * CELL_SIZE}px`
+    el.style.width   = `${CELL_SIZE}px`
+    el.style.height  = `${CELL_SIZE}px`
   }
   const hideSelCell = () => {
     selectedCellRef.current = null
     const el = selCellRef.current; if (el) el.style.display = "none"
   }
 
-  /* ドラッグ矩形を直接 DOM 更新 */
   const updateDragRect = (drag: DragSel | null) => {
     const el = dragRectRef.current; if (!el) return
     if (!drag?.active) { el.style.display = "none"; return }
     const r0 = Math.min(drag.startRow, drag.curRow), r1 = Math.max(drag.startRow, drag.curRow)
     const c0 = Math.min(drag.startCol, drag.curCol), c1 = Math.max(drag.startCol, drag.curCol)
     el.style.display = "block"
-    el.style.left   = `${ROW_HDR_W + c0 * CELL_SIZE}px`
-    el.style.top    = `${DATA_TOP  + r0 * CELL_SIZE}px`
-    el.style.width  = `${(c1 - c0 + 1) * CELL_SIZE}px`
-    el.style.height = `${(r1 - r0 + 1) * CELL_SIZE}px`
+    el.style.left    = `${ROW_HDR_W + c0 * CELL_SIZE}px`
+    el.style.top     = `${DATA_TOP  + r0 * CELL_SIZE}px`
+    el.style.width   = `${(c1 - c0 + 1) * CELL_SIZE}px`
+    el.style.height  = `${(r1 - r0 + 1) * CELL_SIZE}px`
   }
 
-  /* ── スクロール: 表示行範囲を更新 ── */
+  /* ── スクロール ── */
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight } = e.currentTarget
-    rectCacheRef.current = null  // 座標キャッシュ無効化
+    rectCacheRef.current = null
     const dataTop = Math.max(0, scrollTop - DATA_TOP)
     const start = Math.max(0, Math.floor(dataTop / CELL_SIZE) - BUFFER_ROWS)
     const end   = Math.min(totalRows - 1, Math.ceil((dataTop + clientHeight) / CELL_SIZE) + BUFFER_ROWS)
     setVisibleRows(prev => (prev.start === start && prev.end === end) ? prev : { start, end })
   }
 
-  /* ── ポインタハンドラ (state 更新なし → 再レンダリングなし) ── */
+  /* ── ポインタハンドラ ── */
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     const pos = getGridPos(e.clientX, e.clientY); if (!pos) return
@@ -204,7 +237,7 @@ export default function SpreadsheetGrid() {
     const pos = getGridPos(e.clientX, e.clientY); if (!pos) return
     drag.curRow = pos.row; drag.curCol = pos.col
     drag.active = drag.active || pos.row !== drag.startRow || pos.col !== drag.startCol
-    updateDragRect(drag)  // 直接 DOM 操作 → 再レンダリングなし
+    updateDragRect(drag)
   }
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -213,7 +246,6 @@ export default function SpreadsheetGrid() {
     updateDragRect(null)
     if (!drag) return
     if (drag.active) {
-      /* ドラッグ選択: 矩形と重なるバーを選択 */
       const r0 = Math.min(drag.startRow, drag.curRow), r1 = Math.max(drag.startRow, drag.curRow)
       const c0 = Math.min(drag.startCol, drag.curCol), c1 = Math.max(drag.startCol, drag.curCol)
       const ids = new Set(placedBars.filter(b =>
@@ -222,13 +254,12 @@ export default function SpreadsheetGrid() {
       setSelectedBarIds(ids)
       hideSelCell()
     } else {
-      /* クリック: セル選択 (直接 DOM 操作) */
       showSelCell(drag.startRow, drag.startCol)
       setSelectedBarIds(prev => prev.size > 0 ? new Set() : prev)
     }
   }
 
-  /* ── コンテキストメニュー (セル: コンテナ委譲) ── */
+  /* ── コンテキストメニュー ── */
   const handleContainerContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault()
     const pos = getGridPos(e.clientX, e.clientY); if (!pos) return
@@ -238,27 +269,30 @@ export default function SpreadsheetGrid() {
 
   /* ── バー操作 ── */
   const addBar = (data: DialogFormData) => {
-    const sc = Math.max(0, Math.min(COLS-1, dateToCol(data.startDate)))
-    const ec = Math.max(0, Math.min(COLS-1, dateToCol(data.endDate)))
+    const sc = Math.max(0, Math.min(cols-1, dateToCol(data.startDate)))
+    const ec = Math.max(0, Math.min(cols-1, dateToCol(data.endDate)))
     setBars(prev => [...prev, { id: crypto.randomUUID(), deviceId: data.deviceId,
       process: data.process, startCol: sc, endCol: ec, assignee: data.assignee }])
     setDialog(null)
   }
   const editBar = (barId: string, data: DialogFormData) => {
-    const sc = Math.max(0, Math.min(COLS-1, dateToCol(data.startDate)))
-    const ec = Math.max(0, Math.min(COLS-1, dateToCol(data.endDate)))
+    const sc = Math.max(0, Math.min(cols-1, dateToCol(data.startDate)))
+    const ec = Math.max(0, Math.min(cols-1, dateToCol(data.endDate)))
     setBars(prev => prev.map(b => b.id === barId
       ? { ...b, deviceId: data.deviceId, process: data.process, startCol: sc, endCol: ec, assignee: data.assignee }
       : b))
     setDialog(null)
   }
-  const deleteBar    = (id: string) => { setBars(prev => prev.filter(b => b.id !== id)); setSelectedBarIds(prev => { const n = new Set(prev); n.delete(id); return n }) }
+  const deleteBar = (id: string) => {
+    setBars(prev => prev.filter(b => b.id !== id))
+    setSelectedBarIds(prev => { const n = new Set(prev); n.delete(id); return n })
+  }
   const deleteSelected = () => { setBars(prev => prev.filter(b => !selectedBarIds.has(b.id))); setSelectedBarIds(new Set()) }
   const pasteBar = (row: number, col: number) => {
     if (!copiedBar) return
     const dur = copiedBar.endCol - copiedBar.startCol
-    const sc = Math.max(0, Math.min(COLS-1, col))
-    const ec = Math.max(0, Math.min(COLS-1, col + dur))
+    const sc = Math.max(0, Math.min(cols-1, col))
+    const ec = Math.max(0, Math.min(cols-1, col + dur))
     setBars(prev => [...prev, { id: crypto.randomUUID(),
       deviceId: rowMetas[row]?.deviceId ?? DEVICES[0].id,
       process: copiedBar.process, startCol: sc, endCol: ec, assignee: copiedBar.assignee }])
@@ -284,7 +318,7 @@ export default function SpreadsheetGrid() {
       days: bar.endCol - bar.startCol + 1 }
   }
 
-  /* ── 表示バー (可視行範囲のみ) ── */
+  /* ── 可視バー ── */
   const visibleBars = useMemo(
     () => placedBars.filter(b => b.absoluteRow >= visibleRows.start && b.absoluteRow <= visibleRows.end),
     [placedBars, visibleRows]
@@ -294,7 +328,7 @@ export default function SpreadsheetGrid() {
   const colHdrStyle = (col: number, topPx: number): React.CSSProperties => ({
     width: CELL_SIZE, height: HDR_H, position: "sticky", top: topPx, zIndex: 20,
     borderRight: "1px solid #d1d5db", borderBottom: "1px solid #d1d5db",
-    backgroundColor: WEEKEND_COLS.has(col) ? "#fff1f2" : "#f3f4f6",
+    backgroundColor: weekendCols.has(col) ? "#fff1f2" : "#f3f4f6",
   })
   const cornerStyle = (topPx: number): React.CSSProperties => ({
     width: ROW_HDR_W, height: HDR_H, position: "sticky", top: topPx, left: 0, zIndex: 30,
@@ -310,11 +344,36 @@ export default function SpreadsheetGrid() {
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-white select-none">
 
       {/* ツールバー */}
-      <div className="flex items-center px-3 py-1.5 bg-gray-100 border-b border-gray-300 shrink-0">
+      <div className="flex items-center px-3 py-1.5 bg-gray-100 border-b border-gray-300 shrink-0 gap-3 flex-wrap">
         <span className="text-sm font-semibold text-gray-700">スケジュール管理</span>
-        <span className="ml-4 text-xs text-gray-500">
-          {DATES[0].toLocaleDateString("ja-JP")} 〜 {DATES[COLS-1].toLocaleDateString("ja-JP")}
+        <span className="text-xs text-gray-500">
+          {dates[0].toLocaleDateString("ja-JP")} 〜 {dates[cols-1].toLocaleDateString("ja-JP")}
         </span>
+
+        {/* 入力フォーム */}
+        <div className="flex items-center gap-2 ml-4 border-l border-gray-300 pl-4">
+          <label className="text-xs text-gray-600 whitespace-nowrap">表示月数</label>
+          <input
+            type="number" min={1} max={24} value={inputMonths}
+            onChange={e => setInputMonths(Number(e.target.value))}
+            onKeyDown={e => e.key === "Enter" && handleApply()}
+            className="w-14 px-1.5 py-0.5 text-xs border border-gray-300 rounded bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+          <label className="text-xs text-gray-600 whitespace-nowrap ml-2">予定の数</label>
+          <input
+            type="number" min={0} max={5000} step={100} value={inputCount}
+            onChange={e => setInputCount(Number(e.target.value))}
+            onKeyDown={e => e.key === "Enter" && handleApply()}
+            className="w-20 px-1.5 py-0.5 text-xs border border-gray-300 rounded bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+          <button
+            onClick={handleApply}
+            className="px-3 py-0.5 text-xs bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded font-medium transition-colors"
+          >
+            適用
+          </button>
+        </div>
+
         <div className="ml-auto flex items-center gap-3 mr-2">
           {(Object.entries(PROCESS_COLOR) as [ProcessName, {bg:string}][]).map(([name, c]) => (
             <div key={name} className="flex items-center gap-1">
@@ -339,15 +398,15 @@ export default function SpreadsheetGrid() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: `${ROW_HDR_W}px repeat(${COLS}, ${CELL_SIZE}px)`,
-            width: ROW_HDR_W + CELL_SIZE * COLS,
+            gridTemplateColumns: `${ROW_HDR_W}px repeat(${cols}, ${CELL_SIZE}px)`,
+            width: ROW_HDR_W + CELL_SIZE * cols,
             position: "relative",
           }}
         >
           {/* ━━━ 年ヘッダー ━━━ */}
           <div style={cornerStyle(0)} />
-          {DATES.map((date, col) => {
-            const show = col === 0 || DATES[col-1].getFullYear() !== date.getFullYear()
+          {dates.map((date, col) => {
+            const show = col === 0 || dates[col-1].getFullYear() !== date.getFullYear()
             return (
               <div key={`y${col}`} style={colHdrStyle(col, 0)} className="relative">
                 {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-bold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{date.getFullYear()}</span>}
@@ -357,8 +416,8 @@ export default function SpreadsheetGrid() {
 
           {/* ━━━ 月ヘッダー ━━━ */}
           <div style={cornerStyle(HDR_H)} />
-          {DATES.map((date, col) => {
-            const show = col === 0 || DATES[col-1].getMonth() !== date.getMonth()
+          {dates.map((date, col) => {
+            const show = col === 0 || dates[col-1].getMonth() !== date.getMonth()
             return (
               <div key={`m${col}`} style={colHdrStyle(col, HDR_H)} className="relative">
                 {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-semibold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{date.getMonth()+1}月</span>}
@@ -368,9 +427,9 @@ export default function SpreadsheetGrid() {
 
           {/* ━━━ 日ヘッダー ━━━ */}
           <div style={cornerStyle(HDR_H*2)} />
-          {DATES.map((date, col) => (
+          {dates.map((date, col) => (
             <div key={`d${col}`} style={colHdrStyle(col, HDR_H*2)} className="flex items-center justify-center">
-              <span className={`text-[9px] font-medium ${WEEKEND_COLS.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>{date.getDate()}</span>
+              <span className={`text-[9px] font-medium ${weekendCols.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>{date.getDate()}</span>
             </div>
           ))}
 
@@ -385,8 +444,8 @@ export default function SpreadsheetGrid() {
             if (row >= totalRows) return null
             const meta = rowMetas[row]
             const bg   = DEVICE_BG[meta.deviceIdx % DEVICE_BG.length]
-            const bbW  = meta.isLast ? "2px" : "1px"
-            const bbC  = meta.isLast ? "#94a3b8" : "#e5e7eb"
+            const bbW  = meta.isLast  ? "2px" : "1px"
+            const bbC  = meta.isLast  ? "#94a3b8" : "#e5e7eb"
             const btW  = meta.isFirst ? "2px" : undefined
             const btC  = meta.isFirst ? "#94a3b8" : undefined
             return (
@@ -404,13 +463,13 @@ export default function SpreadsheetGrid() {
                   {meta.isFirst && <span className="text-[10px] font-semibold text-gray-700 whitespace-nowrap">{meta.deviceName}</span>}
                 </div>
 
-                {/* データセル (イベントハンドラなし → 高速) */}
-                {DATES.map((_, col) => (
+                {/* データセル */}
+                {dates.map((_, col) => (
                   <div
                     key={`${row},${col}`}
                     style={{
                       width: CELL_SIZE, height: CELL_SIZE,
-                      backgroundColor: WEEKEND_COLS.has(col) ? "#fff1f2" : bg,
+                      backgroundColor: weekendCols.has(col) ? "#fff1f2" : bg,
                       borderRight: "1px solid #e5e7eb",
                       borderBottom: `${bbW} solid ${bbC}`,
                       borderTop: btW ? `${btW} solid ${btC}` : undefined,
@@ -489,7 +548,7 @@ export default function SpreadsheetGrid() {
 
       {/* ステータスバー */}
       <div className="shrink-0 px-3 py-0.5 bg-gray-100 border-t border-gray-300 text-[11px] text-gray-500 flex items-center gap-4">
-        <span>{DEVICES.length} 装置 / {totalRows} 行 × {COLS} 列 / 予定 {bars.length} 件</span>
+        <span>{DEVICES.length} 装置 / {totalRows} 行 × {cols} 列 / 予定 {bars.length} 件</span>
         {selectedBarIds.size > 0 && <span className="text-blue-600 font-semibold">{selectedBarIds.size} 件選択中</span>}
         {copiedBar && <span className="text-purple-600">📋 {copiedBar.process} コピー済み</span>}
         <span className="text-gray-400 ml-auto">右クリック: メニュー｜ドラッグ: 複数選択｜Shift/Ctrl: 追加選択</span>
@@ -519,7 +578,7 @@ export default function SpreadsheetGrid() {
       {dialog && init && (
         <ScheduleDialog
           mode={dialog.mode} initial={init} devices={DEVICES} assignees={ASSIGNEES}
-          minDate={DATES[0]} maxDate={DATES[COLS-1]}
+          minDate={dates[0]} maxDate={dates[cols-1]}
           onSave={data => dialog.mode === "new" ? addBar(data) : editBar(dialog.barId, data)}
           onClose={() => setDialog(null)}
         />
