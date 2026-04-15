@@ -168,7 +168,7 @@ export default function SpreadsheetGrid() {
   /* ── React state ── */
   const [bars,           setBars          ] = useState<BarDef[]>(() => { const d = new Date(); d.setHours(0,0,0,0); return generateSampleBars(DEFAULT_COUNT, d, generateDates(DEFAULT_MONTHS, d).length) })
   const [selectedBarIds, setSelectedBarIds] = useState<Set<string>>(new Set())
-  const [copiedBar,      setCopiedBar     ] = useState<BarDef | null>(null)
+  const [copiedBars,     setCopiedBars    ] = useState<BarDef[]>([])
   const [contextMenu,    setContextMenu   ] = useState<ContextMenuState | null>(null)
   const [dialog,         setDialog        ] = useState<DialogState | null>(null)
   const [tooltip,        setTooltip       ] = useState<TooltipState | null>(null)
@@ -196,7 +196,7 @@ export default function SpreadsheetGrid() {
     const newCols = generateDates(months, startDate).length
     setBars(generateSampleBars(count, startDate, newCols))
     setSelectedBarIds(new Set())
-    setCopiedBar(null)
+    setCopiedBars([])
   }
 
   /* ── 開始日を n ヶ月シフト (ナビゲーションボタン) ── */
@@ -335,13 +335,21 @@ export default function SpreadsheetGrid() {
   }
   const deleteSelected = () => { setBars(prev => prev.filter(b => !selectedBarIds.has(b.id))); setSelectedBarIds(new Set()) }
   const pasteBar = (row: number, col: number) => {
-    if (!copiedBar) return
-    const durMs  = copiedBar.endDate.getTime() - copiedBar.startDate.getTime()
-    const startDate = colToDate(col)
-    const endDate   = new Date(startDate.getTime() + durMs)
-    setBars(prev => [...prev, { id: crypto.randomUUID(),
-      deviceId: rowMetas[row]?.deviceId ?? DEVICES[0].id,
-      process: copiedBar.process, startDate, endDate, assignee: copiedBar.assignee }])
+    if (copiedBars.length === 0) return
+    const targetDeviceId = rowMetas[row]?.deviceId ?? DEVICES[0].id
+    const anchorMs = Math.min(...copiedBars.map(b => b.startDate.getTime()))
+    const offsetMs = colToDate(col).getTime() - anchorMs
+    setBars(prev => [
+      ...prev,
+      ...copiedBars.map(b => ({
+        id: crypto.randomUUID(),
+        deviceId: targetDeviceId,
+        process:  b.process,
+        startDate: new Date(b.startDate.getTime() + offsetMs),
+        endDate:   new Date(b.endDate.getTime()   + offsetMs),
+        assignee:  b.assignee,
+      })),
+    ])
     setContextMenu(null)
   }
 
@@ -643,7 +651,7 @@ export default function SpreadsheetGrid() {
       <div className="shrink-0 px-3 py-0.5 bg-gray-100 border-t border-gray-300 text-[11px] text-gray-500 flex items-center gap-4">
         <span>{DEVICES.length} 装置 / {totalRows} 行 × {cols} 列 / 予定 {bars.length} 件</span>
         {selectedBarIds.size > 0 && <span className="text-blue-600 font-semibold">{selectedBarIds.size} 件選択中</span>}
-        {copiedBar && <span className="text-purple-600">📋 {copiedBar.process} コピー済み</span>}
+        {copiedBars.length > 0 && <span className="text-purple-600">📋 {copiedBars.length} 件コピー済み</span>}
         <span className="text-gray-400 ml-auto">右クリック: メニュー｜ドラッグ: 複数選択｜Shift/Ctrl: 追加選択</span>
       </div>
 
@@ -651,7 +659,7 @@ export default function SpreadsheetGrid() {
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x} y={contextMenu.y} type={contextMenu.type}
-          hasClipboard={copiedBar !== null} isMultiSelect={multiSel} selectedCount={selectedBarIds.size}
+          clipboardCount={copiedBars.length} isMultiSelect={multiSel} selectedCount={selectedBarIds.size}
           onNewSchedule={() => {
             if (contextMenu.type !== "cell") return
             setDialog({ mode: "new", deviceId: rowMetas[contextMenu.row]?.deviceId ?? DEVICES[0].id,
@@ -660,7 +668,16 @@ export default function SpreadsheetGrid() {
           onPaste={() => { if (contextMenu.type === "cell") pasteBar(contextMenu.row, contextMenu.col) }}
           onDetail={() => { if (contextMenu.type === "bar") setTooltip({ barId, anchorX: contextMenu.x, anchorY: contextMenu.y }) }}
           onEdit={() => { if (contextMenu.type === "bar") setDialog({ mode: "edit", barId }) }}
-          onCopy={() => { if (contextMenu.type === "bar") { const b = bars.find(b => b.id === barId); if (b) setCopiedBar(b) } }}
+          onCopy={() => {
+            if (contextMenu.type === "bar") {
+              const b = bars.find(b => b.id === barId)
+              if (b) setCopiedBars([b])
+            }
+          }}
+          onCopySelected={() => {
+            const selected = bars.filter(b => selectedBarIds.has(b.id))
+            if (selected.length > 0) setCopiedBars(selected)
+          }}
           onDelete={() => { if (contextMenu.type === "bar") deleteBar(barId) }}
           onDeleteSelected={deleteSelected}
           onClose={() => setContextMenu(null)}

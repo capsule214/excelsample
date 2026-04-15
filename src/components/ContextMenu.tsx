@@ -6,7 +6,7 @@ interface Props {
   x: number
   y: number
   type: "cell" | "bar"
-  hasClipboard: boolean     // コピー済みバーがある
+  clipboardCount: number    // クリップボード内のバー数 (0 = なし)
   isMultiSelect: boolean    // 複数選択状態でこのバーが選択中
   selectedCount: number     // 選択バー数
   onNewSchedule: () => void
@@ -14,6 +14,7 @@ interface Props {
   onDetail: () => void
   onEdit: () => void
   onCopy: () => void
+  onCopySelected: () => void
   onDelete: () => void
   onDeleteSelected: () => void
   onClose: () => void
@@ -21,8 +22,8 @@ interface Props {
 
 export function ContextMenu({
   x, y, type,
-  hasClipboard, isMultiSelect, selectedCount,
-  onNewSchedule, onPaste, onDetail, onEdit, onCopy, onDelete, onDeleteSelected,
+  clipboardCount, isMultiSelect, selectedCount,
+  onNewSchedule, onPaste, onDetail, onEdit, onCopy, onCopySelected, onDelete, onDeleteSelected,
   onClose,
 }: Props) {
   useEffect(() => {
@@ -49,9 +50,9 @@ export function ContextMenu({
           <button className={item} onClick={() => { onNewSchedule(); onClose() }}>
             <span className="text-blue-500 font-bold">＋</span> 新規追加
           </button>
-          {hasClipboard && (
+          {clipboardCount > 0 && (
             <button className={item} onClick={() => { onPaste(); onClose() }}>
-              <span className="text-gray-400">📋</span> 貼り付け
+              <span className="text-gray-400">📋</span> 貼り付け{clipboardCount > 1 ? ` (${clipboardCount}件)` : ""}
             </button>
           )}
         </>
@@ -59,6 +60,10 @@ export function ContextMenu({
         /* 複数選択時 */
         <>
           <div className="px-4 py-1 text-[11px] text-gray-400">{selectedCount} 件を選択中</div>
+          {divider}
+          <button className={item} onClick={() => { onCopySelected(); onClose() }}>
+            <span className="text-gray-400">📋</span> コピー ({selectedCount}件)
+          </button>
           {divider}
           <button className={danger} onClick={() => { onDeleteSelected(); onClose() }}>
             <span>🗑</span> 選択した予定を削除 ({selectedCount}件)
