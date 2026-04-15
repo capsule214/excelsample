@@ -62,14 +62,14 @@ interface BarDef {
 interface PlacedBar extends BarDef { absoluteRow: number }
 /** 描画用: ビュー開始日基準の列位置を付加 */
 interface RenderedBar extends PlacedBar { viewStartCol: number; viewEndCol: number }
-interface RowMeta { deviceId: string; deviceIdx: number; deviceName: string; isFirst: boolean; isLast: boolean }
+interface RowMeta { groupId: string; groupIdx: number; groupName: string; isFirst: boolean; isLast: boolean }
 interface DragSel { startRow: number; startCol: number; curRow: number; curCol: number; active: boolean }
 
 type ContextMenuState =
   | { type: "cell"; x: number; y: number; row: number; col: number }
   | { type: "bar";  x: number; y: number; barId: string }
 type DialogState =
-  | { mode: "new";  deviceId: string; startDate: Date; endDate: Date }
+  | { mode: "new";  deviceId: string; defaultAssignee?: string; startDate: Date; endDate: Date }
   | { mode: "edit"; barId: string }
 interface TooltipState { barId: string; anchorX: number; anchorY: number }
 
@@ -79,9 +79,9 @@ function makeLCG(seed: number) {
   return () => { s = (Math.imul(1664525, s) + 1013904223) >>> 0; return s / 4294967296 }
 }
 
-function generateSampleBars(count: number, baseDate: Date, cols: number): BarDef[] {
+function generateSampleBars(count: number, baseDate: Date, cols: number, seed = 42): BarDef[] {
   const procs: ProcessName[] = ["工程A", "工程B", "検査", "出荷"]
-  const rand = makeLCG(42)
+  const rand = makeLCG(seed)
   const base = new Date(baseDate); base.setHours(0, 0, 0, 0)
   const bars: BarDef[] = []
   let id = 0
@@ -103,17 +103,23 @@ function generateSampleBars(count: number, baseDate: Date, cols: number): BarDef
   return bars.slice(0, count)
 }
 
+interface GroupDef { id: string; name: string }
+
 /* ─── レイアウト計算 (絶対日付で行割り当て → ビュー非依存) ── */
-function computeLayout(bars: BarDef[]): { placedBars: PlacedBar[]; rowMetas: RowMeta[]; totalRows: number } {
+function computeLayout(
+  bars: BarDef[],
+  groups: GroupDef[],
+  getGroupId: (bar: BarDef) => string,
+): { placedBars: PlacedBar[]; rowMetas: RowMeta[]; totalRows: number } {
   const placedBars: PlacedBar[] = []
   const rowMetas: RowMeta[] = []
   let currentRow = 0
-  for (const [di, device] of DEVICES.entries()) {
-    const dBars = bars
-      .filter(b => b.deviceId === device.id)
+  for (const [gi, group] of groups.entries()) {
+    const gBars = bars
+      .filter(b => getGroupId(b) === group.id)
       .sort((a, b) => a.startDate.getTime() - b.startDate.getTime())
-    const subRowEnds: number[] = []   // タイムスタンプ (ms) で管理
-    for (const bar of dBars) {
+    const subRowEnds: number[] = []
+    for (const bar of gBars) {
       let sub = subRowEnds.findIndex(e => e < bar.startDate.getTime())
       if (sub === -1) { sub = subRowEnds.length; subRowEnds.push(-Infinity) }
       subRowEnds[sub] = bar.endDate.getTime()
@@ -121,7 +127,7 @@ function computeLayout(bars: BarDef[]): { placedBars: PlacedBar[]; rowMetas: Row
     }
     const rowCount = Math.max(MIN_ROWS, subRowEnds.length)
     for (let i = 0; i < rowCount; i++)
-      rowMetas.push({ deviceId: device.id, deviceIdx: di, deviceName: device.name,
+      rowMetas.push({ groupId: group.id, groupIdx: gi, groupName: group.name,
         isFirst: i === 0, isLast: i === rowCount - 1 })
     currentRow += rowCount
   }
@@ -129,7 +135,9 @@ function computeLayout(bars: BarDef[]): { placedBars: PlacedBar[]; rowMetas: Row
 }
 
 /* ─── コンポーネント ──────────────────────────────────── */
-export default function SpreadsheetGrid() {
+interface SpreadsheetGridProps { mode: "device" | "assignee" }
+
+export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
   /* ── ツールバー入力値 (フォーム用) ── */
   const [inputMonths,    setInputMonths   ] = useState(DEFAULT_MONTHS)
   const [inputCount,     setInputCount    ] = useState(DEFAULT_COUNT)
@@ -165,8 +173,19 @@ export default function SpreadsheetGrid() {
   const selectedCellRef = useRef<{ row: number; col: number } | null>(null)
   const rectCacheRef    = useRef<DOMRect | null>(null)
 
+  /* ── グループ定義 (mode に応じて切り替え) ── */
+  const groups     = useMemo<GroupDef[]>(
+    () => mode === "device" ? DEVICES : ASSIGNEES.map(name => ({ id: name, name })),
+    [mode]
+  )
+  const getGroupId = useCallback(
+    (bar: BarDef) => mode === "device" ? bar.deviceId : bar.assignee,
+    [mode]
+  )
+  const seed = mode === "device" ? 42 : 99
+
   /* ── React state ── */
-  const [bars,           setBars          ] = useState<BarDef[]>(() => { const d = new Date(); d.setHours(0,0,0,0); return generateSampleBars(DEFAULT_COUNT, d, generateDates(DEFAULT_MONTHS, d).length) })
+  const [bars,           setBars          ] = useState<BarDef[]>(() => { const d = new Date(); d.setHours(0,0,0,0); return generateSampleBars(DEFAULT_COUNT, d, generateDates(DEFAULT_MONTHS, d).length, seed) })
   const [selectedBarIds, setSelectedBarIds] = useState<Set<string>>(new Set())
   const [copiedBars,     setCopiedBars    ] = useState<BarDef[]>([])
   const [contextMenu,    setContextMenu   ] = useState<ContextMenuState | null>(null)
@@ -194,7 +213,7 @@ export default function SpreadsheetGrid() {
 
     // バーを明示的に再生成 (開始日・月数・件数すべて確定後)
     const newCols = generateDates(months, startDate).length
-    setBars(generateSampleBars(count, startDate, newCols))
+    setBars(generateSampleBars(count, startDate, newCols, seed))
     setSelectedBarIds(new Set())
     setCopiedBars([])
   }
@@ -209,7 +228,10 @@ export default function SpreadsheetGrid() {
     })
   }
 
-  const { placedBars, rowMetas, totalRows } = useMemo(() => computeLayout(bars), [bars])
+  const { placedBars, rowMetas, totalRows } = useMemo(
+    () => computeLayout(bars, groups, getGroupId),
+    [bars, groups, getGroupId]
+  )
 
   useEffect(() => {
     setVisibleRows(prev => ({ start: prev.start, end: Math.min(totalRows - 1, prev.end) }))
@@ -336,18 +358,18 @@ export default function SpreadsheetGrid() {
   const deleteSelected = () => { setBars(prev => prev.filter(b => !selectedBarIds.has(b.id))); setSelectedBarIds(new Set()) }
   const pasteBar = (row: number, col: number) => {
     if (copiedBars.length === 0) return
-    const targetDeviceId = rowMetas[row]?.deviceId ?? DEVICES[0].id
     const anchorMs = Math.min(...copiedBars.map(b => b.startDate.getTime()))
     const offsetMs = colToDate(col).getTime() - anchorMs
+    const targetGroupId = rowMetas[row]?.groupId
     setBars(prev => [
       ...prev,
       ...copiedBars.map(b => ({
-        id: crypto.randomUUID(),
-        deviceId: targetDeviceId,
-        process:  b.process,
+        id:        crypto.randomUUID(),
+        deviceId:  mode === "device"   ? (targetGroupId ?? DEVICES[0].id)   : b.deviceId,
+        assignee:  mode === "assignee" ? (targetGroupId ?? ASSIGNEES[0])    : b.assignee,
+        process:   b.process,
         startDate: new Date(b.startDate.getTime() + offsetMs),
         endDate:   new Date(b.endDate.getTime()   + offsetMs),
-        assignee:  b.assignee,
       })),
     ])
     setContextMenu(null)
@@ -357,7 +379,8 @@ export default function SpreadsheetGrid() {
   const dialogInitial = (): DialogFormData | null => {
     if (!dialog) return null
     if (dialog.mode === "new") return { deviceId: dialog.deviceId, process: "工程A",
-      startDate: dialog.startDate, endDate: dialog.endDate, assignee: ASSIGNEES[0] }
+      startDate: dialog.startDate, endDate: dialog.endDate,
+      assignee: dialog.defaultAssignee ?? ASSIGNEES[0] }
     const bar = bars.find(b => b.id === dialog.barId); if (!bar) return null
     return { deviceId: bar.deviceId, process: bar.process,
       startDate: bar.startDate, endDate: bar.endDate, assignee: bar.assignee }
@@ -405,7 +428,7 @@ export default function SpreadsheetGrid() {
   const multiSel = selectedBarIds.size > 1 && selectedBarIds.has(barId)
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-white select-none">
+    <div className="flex flex-col h-full w-full overflow-hidden bg-white select-none">
 
       {/* ツールバー */}
       <div className="flex items-center px-3 py-1.5 bg-gray-100 border-b border-gray-300 shrink-0 gap-3 flex-wrap">
@@ -544,7 +567,7 @@ export default function SpreadsheetGrid() {
             const row = visibleRows.start + i
             if (row >= totalRows) return null
             const meta = rowMetas[row]
-            const bg   = DEVICE_BG[meta.deviceIdx % DEVICE_BG.length]
+            const bg   = DEVICE_BG[meta.groupIdx % DEVICE_BG.length]
             const bbW  = meta.isLast  ? "2px" : "1px"
             const bbC  = meta.isLast  ? "#94a3b8" : "#e5e7eb"
             const btW  = meta.isFirst ? "2px" : undefined
@@ -561,7 +584,7 @@ export default function SpreadsheetGrid() {
                   borderTop: btW ? `${btW} solid ${btC}` : undefined,
                   display: "flex", alignItems: "center", paddingLeft: 6,
                 }}>
-                  {meta.isFirst && <span className="text-[10px] font-semibold text-gray-700 whitespace-nowrap">{meta.deviceName}</span>}
+                  {meta.isFirst && <span className="text-[10px] font-semibold text-gray-700 whitespace-nowrap">{meta.groupName}</span>}
                 </div>
 
                 {/* データセル */}
@@ -662,8 +685,13 @@ export default function SpreadsheetGrid() {
           clipboardCount={copiedBars.length} isMultiSelect={multiSel} selectedCount={selectedBarIds.size}
           onNewSchedule={() => {
             if (contextMenu.type !== "cell") return
-            setDialog({ mode: "new", deviceId: rowMetas[contextMenu.row]?.deviceId ?? DEVICES[0].id,
-              startDate: colToDate(contextMenu.col), endDate: colToDate(contextMenu.col) })
+            const meta = rowMetas[contextMenu.row]
+            setDialog({
+              mode: "new",
+              deviceId:        mode === "device"   ? (meta?.groupId ?? DEVICES[0].id)   : DEVICES[0].id,
+              defaultAssignee: mode === "assignee" ? (meta?.groupId ?? ASSIGNEES[0])    : undefined,
+              startDate: colToDate(contextMenu.col), endDate: colToDate(contextMenu.col),
+            })
           }}
           onPaste={() => { if (contextMenu.type === "cell") pasteBar(contextMenu.row, contextMenu.col) }}
           onDetail={() => { if (contextMenu.type === "bar") setTooltip({ barId, anchorX: contextMenu.x, anchorY: contextMenu.y }) }}
