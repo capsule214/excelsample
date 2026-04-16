@@ -50,6 +50,11 @@ function getDb(): Database.Database {
       start_date  TEXT NOT NULL,
       end_date    TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS display_settings (
+      setting_key TEXT PRIMARY KEY,
+      value       TEXT NOT NULL DEFAULT '[]'
+    );
   `)
 
   /* ─── 初回シード ─── */

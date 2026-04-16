@@ -11,13 +11,11 @@ const HDR_H       = 20
 const DATA_TOP    = HDR_H * 3
 const MIN_ROWS    = 3
 const BUFFER_ROWS = 12
-/* 装置モード: 2列ヘッダー (機種+製番 / 要求納期) */
-const DEV_HDR_W1  = 130   // 機種名+製番
-const DEV_HDR_W2  = 72    // 要求納期
+const DEV_HDR_W1  = 130
+const DEV_HDR_W2  = 72
 const DEV_HDR_W   = DEV_HDR_W1 + DEV_HDR_W2
-const ASGN_HDR_W  = 80    // 担当者モード
+const ASGN_HDR_W  = 80
 
-/* ─── デフォルト値 ──────────────────────────────────── */
 const DEFAULT_MONTHS = 4
 const DEFAULT_COUNT  = 1000
 const DEVICE_BG      = ["#f8fafc","#f0f9ff","#fefce8","#fdf4ff","#f0fdf4",
@@ -46,7 +44,7 @@ function toIso(d: Date) { return d.toISOString().slice(0, 10) }
 /* ─── 型 ────────────────────────────────────────────── */
 interface BarDef {
   id: string; deviceId: string
-  taskId: string; process: string   // process = taskName
+  taskId: string; process: string
   colorBg: string; colorFg: string
   startDate: Date; endDate: Date
   assigneeId: string; assignee: string
@@ -109,17 +107,96 @@ function computeLayout(
   return { placedBars, rowMetas, totalRows: currentRow }
 }
 
-/* ─── コンポーネント ──────────────────────────────────── */
-interface SpreadsheetGridProps { mode: "device" | "assignee" }
+/* ─── スケルトン ─────────────────────────────────────── */
+interface SkeletonProps { ROW_HDR_W: number; tasks: TaskInfo[] }
+function SkeletonGrid({ ROW_HDR_W, tasks }: SkeletonProps) {
+  const BAR_COLORS = tasks.length > 0
+    ? tasks.map(t => t.colorBg + "60")
+    : ["#bfdbfe","#a7f3d0","#fde68a","#ddd6fe"]
+  const LEFTS  = [8,28,48,15,35,55,5,42,22,62,18,38,52,10,30,45,20,65,25,50]
+  const WIDTHS = [18,14,22,16,20,12,24,15,19,11,17,21,13,23,16,18,20,14,22,15]
 
-export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
+  return (
+    <div className="flex flex-col h-full w-full overflow-hidden bg-white animate-pulse select-none">
+      {/* ツールバー骨格 */}
+      <div className="shrink-0 flex items-center px-3 py-1.5 bg-gray-100 border-b border-gray-300 gap-3">
+        <div className="h-5 w-40 bg-gray-200 rounded" />
+        <div className="h-5 w-28 bg-gray-200 rounded" />
+        <div className="h-5 w-20 bg-gray-200 rounded" />
+        <div className="h-5 w-14 bg-blue-200 rounded" />
+        <div className="ml-auto flex gap-2">
+          {BAR_COLORS.slice(0,4).map((c, i) => (
+            <div key={i} className="flex items-center gap-1">
+              <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: c }} />
+              <div className="h-3 w-8 bg-gray-200 rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* グリッド骨格 */}
+      <div className="flex-1 overflow-hidden flex flex-col">
+        {/* 日付ヘッダー */}
+        <div className="shrink-0 flex border-b border-gray-200" style={{ height: HDR_H * 3 }}>
+          <div className="shrink-0 bg-gray-200" style={{ width: ROW_HDR_W }} />
+          <div className="flex-1 bg-gray-100" />
+        </div>
+        {/* データ行 */}
+        <div className="flex-1 overflow-hidden">
+          {Array.from({ length: 20 }, (_, i) => (
+            <div key={i} className="flex border-b border-gray-100" style={{ height: CELL_SIZE }}>
+              <div
+                className="shrink-0 border-r border-gray-200 bg-gray-50 flex items-center pl-2"
+                style={{ width: ROW_HDR_W }}
+              >
+                {i % 3 === 0 && <div className="h-2.5 bg-gray-200 rounded" style={{ width: ROW_HDR_W * 0.7 }} />}
+              </div>
+              <div className="flex-1 relative bg-white">
+                <div
+                  className="absolute inset-y-0.5 rounded"
+                  style={{
+                    left:  `${LEFTS[i % LEFTS.length]}%`,
+                    width: `${WIDTHS[i % WIDTHS.length]}%`,
+                    backgroundColor: BAR_COLORS[i % BAR_COLORS.length],
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ステータスバー骨格 */}
+      <div className="shrink-0 px-3 py-0.5 bg-gray-100 border-t border-gray-300">
+        <div className="h-3 w-40 bg-gray-200 rounded" />
+      </div>
+    </div>
+  )
+}
+
+/* ─── コンポーネント Props ───────────────────────────── */
+interface SpreadsheetGridProps {
+  mode:            "device" | "assignee"
+  devices:         DeviceInfo[]
+  assignees:       AssigneeInfo[]
+  tasks:           TaskInfo[]
+  visibleGroupIds?: string[]   // undefined = 全件表示
+}
+
+export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visibleGroupIds }: SpreadsheetGridProps) {
   const ROW_HDR_W = mode === "device" ? DEV_HDR_W : ASGN_HDR_W
 
-  /* ── サーバーデータ ── */
-  const [devices,   setDevices  ] = useState<DeviceInfo[]>([])
-  const [assignees, setAssignees] = useState<AssigneeInfo[]>([])
-  const [tasks,     setTasks    ] = useState<TaskInfo[]>([])
+  /* ── スケジュールのみ内部フェッチ ── */
   const [loading,   setLoading  ] = useState(true)
+  const [bars,      setBars     ] = useState<BarDef[]>([])
+  const [seeding,   setSeeding  ] = useState(false)
+
+  useEffect(() => {
+    fetch("/api/schedules").then(r => r.json()).then((scheds: ApiBar[]) => {
+      setBars(scheds.map(apiBarToBarDef))
+      setLoading(false)
+    })
+  }, [])
 
   /* ── ツールバー入力値 ── */
   const [inputMonths,    setInputMonths   ] = useState(DEFAULT_MONTHS)
@@ -133,15 +210,15 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
   })
 
   /* ── 日付・列数 ── */
-  const dates       = useMemo(() => generateDates(appliedMonths, appliedStartDate), [appliedMonths, appliedStartDate])
-  const cols        = dates.length
+  const dates      = useMemo(() => generateDates(appliedMonths, appliedStartDate), [appliedMonths, appliedStartDate])
+  const cols       = dates.length
   const weekendCols = useMemo(
     () => new Set(dates.map((d, i) => (d.getDay() === 0 || d.getDay() === 6) ? i : -1).filter(i => i >= 0)),
     [dates]
   )
 
   /* ── 日付↔列変換 ── */
-  const colToDate = useCallback((col: number): Date => dates[Math.max(0, Math.min(cols-1, col))], [dates, cols])
+  const colToDate    = useCallback((col: number) => dates[Math.max(0, Math.min(cols-1, col))], [dates, cols])
   const barToViewCols = useCallback((bar: BarDef) => {
     const vm = dates[0].getTime()
     return {
@@ -159,42 +236,12 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
   const rectCacheRef    = useRef<DOMRect | null>(null)
 
   /* ── React state ── */
-  const [bars,           setBars          ] = useState<BarDef[]>([])
   const [selectedBarIds, setSelectedBarIds] = useState<Set<string>>(new Set())
   const [copiedBars,     setCopiedBars    ] = useState<BarDef[]>([])
   const [contextMenu,    setContextMenu   ] = useState<ContextMenuState | null>(null)
   const [dialog,         setDialog        ] = useState<DialogState | null>(null)
   const [tooltip,        setTooltip       ] = useState<TooltipState | null>(null)
   const [visibleRows,    setVisibleRows   ] = useState({ start: 0, end: 79 })
-  const [seeding,        setSeeding       ] = useState(false)
-
-  /* ── 初回データ取得 ── */
-  useEffect(() => {
-    Promise.all([
-      fetch("/api/devices").then(r => r.json()),
-      fetch("/api/assignees").then(r => r.json()),
-      fetch("/api/tasks").then(r => r.json()),
-      fetch("/api/schedules").then(r => r.json()),
-    ]).then(([devs, asgns, tsks, scheds]) => {
-      setDevices(devs)
-      setAssignees(asgns)
-      setTasks(tsks)
-      setBars((scheds as ApiBar[]).map(apiBarToBarDef))
-      setLoading(false)
-    })
-  }, [])
-
-  /* ── グループ定義 ── */
-  const groups     = useMemo<GroupDef[]>(() =>
-    mode === "device"
-      ? devices.map(d => ({ id: d.id, name: `${d.modelName} / ${d.serialNumber}` }))
-      : assignees.map(a => ({ id: a.id, name: a.name })),
-    [mode, devices, assignees]
-  )
-  const getGroupId = useCallback(
-    (bar: BarDef) => mode === "device" ? bar.deviceId : bar.assigneeId,
-    [mode]
-  )
 
   /* ── タスクカラーマップ ── */
   const taskColorMap = useMemo(() => {
@@ -202,6 +249,21 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
     for (const t of tasks) m[t.id] = { bg: t.colorBg, fg: t.colorFg }
     return m
   }, [tasks])
+
+  /* ── グループ定義 (visibleGroupIds でフィルタ) ── */
+  const groups = useMemo<GroupDef[]>(() => {
+    const all: GroupDef[] = mode === "device"
+      ? devices.map(d => ({ id: d.id, name: `${d.modelName} / ${d.serialNumber}` }))
+      : assignees.map(a => ({ id: a.id, name: a.name }))
+    if (!visibleGroupIds) return all
+    const vis = new Set(visibleGroupIds)
+    return all.filter(g => vis.has(g.id))
+  }, [mode, devices, assignees, visibleGroupIds])
+
+  const getGroupId = useCallback(
+    (bar: BarDef) => mode === "device" ? bar.deviceId : bar.assigneeId,
+    [mode]
+  )
 
   /* ── レイアウト計算 ── */
   const { placedBars, rowMetas, totalRows } = useMemo(
@@ -213,13 +275,11 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
     setVisibleRows(prev => ({ start: prev.start, end: Math.min(totalRows - 1, prev.end) }))
   }, [totalRows])
 
-  /* ── 適用ボタン: ビュー変更 + DB 再シード ── */
+  /* ── 適用ボタン ── */
   const handleApply = async () => {
     const months = Math.max(1, Math.min(24, inputMonths))
     const count  = Math.max(0, Math.min(5000, inputCount))
-    setInputMonths(months)
-    setInputCount(count)
-    setAppliedMonths(months)
+    setInputMonths(months); setInputCount(count); setAppliedMonths(months)
 
     let startDate = appliedStartDate
     try {
@@ -229,8 +289,7 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
 
     setSeeding(true)
     await fetch("/api/seed", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ count, baseDate: toIso(startDate), months }),
     })
     const scheds: ApiBar[] = await fetch("/api/schedules").then(r => r.json())
@@ -467,25 +526,21 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
     ...extra,
   })
 
+  /* ── スケルトン表示 ── */
+  if (loading) {
+    return <SkeletonGrid ROW_HDR_W={ROW_HDR_W} tasks={tasks} />
+  }
+
   const init     = dialogInitial()
   const tipInfo  = tooltipInfo()
   const barId    = contextMenu?.type === "bar" ? contextMenu.barId : ""
   const multiSel = selectedBarIds.size > 1 && selectedBarIds.has(barId)
-
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center bg-white">
-        <span className="text-sm text-gray-400">読み込み中...</span>
-      </div>
-    )
-  }
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden bg-white select-none">
 
       {/* ツールバー */}
       <div className="flex items-center px-3 py-1.5 bg-gray-100 border-b border-gray-300 shrink-0 gap-3 flex-wrap">
-        {/* 表示開始日ナビ */}
         <div className="flex items-center gap-1">
           <label className="text-xs text-gray-600 whitespace-nowrap mr-1">表示開始日</label>
           {([-2,-1] as const).map(n => (
@@ -507,7 +562,6 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
           ))}
         </div>
 
-        {/* 表示月数・件数・適用 */}
         <div className="flex items-center gap-2 border-l border-gray-300 pl-3">
           <label className="text-xs text-gray-600 whitespace-nowrap">表示月数</label>
           <input type="number" min={1} max={24} value={inputMonths}
@@ -527,7 +581,6 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
           </button>
         </div>
 
-        {/* 凡例 */}
         <div className="ml-auto flex items-center gap-3 mr-2">
           {tasks.map(t => (
             <div key={t.id} className="flex items-center gap-1">
@@ -607,13 +660,10 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
             const bbC  = meta.isLast  ? "#94a3b8" : "#e5e7eb"
             const btW  = meta.isFirst ? "2px" : undefined
             const btC  = meta.isFirst ? "#94a3b8" : undefined
-
-            /* 装置モードの場合、追加メタ情報を取得 */
             const devInfo = mode === "device" ? devices.find(d => d.id === meta.groupId) : undefined
 
             return (
               <React.Fragment key={`row-${row}`}>
-                {/* 行ヘッダー */}
                 <div style={{
                   width: ROW_HDR_W, height: CELL_SIZE,
                   position: "sticky", left: 0, zIndex: 10,
@@ -626,12 +676,8 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
                   {meta.isFirst && mode === "device" && (
                     <>
                       <div style={{ width: DEV_HDR_W1, paddingLeft: 6, overflow: "hidden" }}>
-                        <div className="text-[9px] font-semibold text-gray-700 truncate leading-tight">
-                          {devInfo?.modelName}
-                        </div>
-                        <div className="text-[9px] text-gray-500 truncate leading-tight">
-                          {devInfo?.serialNumber}
-                        </div>
+                        <div className="text-[9px] font-semibold text-gray-700 truncate leading-tight">{devInfo?.modelName}</div>
+                        <div className="text-[9px] text-gray-500 truncate leading-tight">{devInfo?.serialNumber}</div>
                       </div>
                       <div style={{ width: DEV_HDR_W2, paddingLeft: 4, borderLeft: "1px solid #d1d5db", overflow: "hidden" }}>
                         <div className="text-[9px] text-gray-500 truncate leading-tight">
@@ -647,7 +693,6 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
                   )}
                 </div>
 
-                {/* データセル */}
                 {dates.map((_, col) => (
                   <div key={`${row},${col}`} style={{
                     width: CELL_SIZE, height: CELL_SIZE,
@@ -700,6 +745,10 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
                   if (!selectedBarIds.has(bar.id)) setSelectedBarIds(new Set([bar.id]))
                   setContextMenu({ type: "bar", x: e.clientX, y: e.clientY, barId: bar.id })
                 }}
+                onMouseEnter={e => {
+                  if (!contextMenu) setTooltip({ barId: bar.id, anchorX: e.clientX, anchorY: e.clientY })
+                }}
+                onMouseLeave={() => setTooltip(null)}
               >
                 <span style={{ fontSize: 9, fontWeight: 700, whiteSpace: "nowrap", letterSpacing: "0.02em" }}>
                   {bar.process}
@@ -740,8 +789,8 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
             const meta = rowMetas[contextMenu.row]
             setDialog({
               mode: "new",
-              deviceId:           mode === "device"   ? (meta?.groupId ?? devices[0]?.id ?? "")   : devices[0]?.id ?? "",
-              defaultAssigneeId:  mode === "assignee" ? (meta?.groupId ?? assignees[0]?.id ?? "") : undefined,
+              deviceId:          mode === "device"   ? (meta?.groupId ?? devices[0]?.id ?? "")   : devices[0]?.id ?? "",
+              defaultAssigneeId: mode === "assignee" ? (meta?.groupId ?? assignees[0]?.id ?? "") : undefined,
               startDate: colToDate(contextMenu.col), endDate: colToDate(contextMenu.col),
             })
           }}
@@ -751,10 +800,7 @@ export default function SpreadsheetGrid({ mode }: SpreadsheetGridProps) {
           onCopy={() => {
             if (contextMenu.type === "bar") { const b = bars.find(b => b.id === barId); if (b) setCopiedBars([b]) }
           }}
-          onCopySelected={() => {
-            const sel = bars.filter(b => selectedBarIds.has(b.id))
-            if (sel.length > 0) setCopiedBars(sel)
-          }}
+          onCopySelected={() => { const sel = bars.filter(b => selectedBarIds.has(b.id)); if (sel.length > 0) setCopiedBars(sel) }}
           onDelete={() => { if (contextMenu.type === "bar") deleteBar(barId) }}
           onDeleteSelected={deleteSelected}
           onClose={() => setContextMenu(null)}
