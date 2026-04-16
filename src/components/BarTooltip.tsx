@@ -2,15 +2,9 @@
 
 import { useEffect, useRef } from "react"
 
-const PROCESS_COLOR: Record<string, string> = {
-  "工程A": "#3b82f6",
-  "工程B": "#10b981",
-  "検査":  "#f59e0b",
-  "出荷":  "#8b5cf6",
-}
-
 export interface TooltipBarInfo {
   process: string
+  colorBg: string
   deviceName: string
   assignee: string
   startDate: Date
@@ -48,7 +42,7 @@ export function BarTooltip({ bar, anchorX, anchorY, onClose }: Props) {
     ? anchorY + ARROW + 4
     : anchorY - 170 - ARROW - 4   // 170px = 吹き出しの概算高さ
 
-  const color = PROCESS_COLOR[bar.process] ?? "#6b7280"
+  const color = bar.colorBg || "#6b7280"
 
   const ArrowUp = () => (
     <>
