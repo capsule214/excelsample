@@ -8,7 +8,6 @@ import { BarTooltip, type TooltipBarInfo } from "./BarTooltip"
 /* ─── 固定定数 ──────────────────────────────────────── */
 const CELL_SIZE   = 20
 const HDR_H       = 20
-const DATA_TOP    = HDR_H * 3
 const MIN_ROWS    = 3
 const BUFFER_ROWS = 12
 const DEV_HDR_W1  = 130
@@ -16,10 +15,34 @@ const DEV_HDR_W2  = 72
 const DEV_HDR_W   = DEV_HDR_W1 + DEV_HDR_W2
 const ASGN_HDR_W  = 80
 
+const SLOT_ABBREV = ["前1", "前2", "後1", "後2", "残1", "残2"] as const
+const SLOT_COUNT  = 6
+
 const DEFAULT_MONTHS = 4
 const DEFAULT_COUNT  = 1000
 const DEVICE_BG      = ["#f8fafc","#f0f9ff","#fefce8","#fdf4ff","#f0fdf4",
                         "#fff7ed","#ecfdf5","#fef2f2","#f5f3ff","#f0fdfa"]
+
+/* ─── 時間→スロット変換 ─────────────────────────────── */
+function startHourToSlot(h: number): number {
+  if (h === 0) return 0   // 時間なし = 日の先頭
+  if (h < 10)  return 0
+  if (h < 13)  return 1
+  if (h < 15)  return 2
+  if (h < 17)  return 3
+  if (h < 19)  return 4
+  return 5
+}
+
+function endHourToSlot(h: number): number {
+  if (h === 0)  return 5   // 時間なし = 日の末尾
+  if (h <= 10)  return 0
+  if (h <= 12)  return 1
+  if (h <= 15)  return 2
+  if (h <= 17)  return 3
+  if (h <= 19)  return 4
+  return 5
+}
 
 /* ─── 日付ユーティリティ ─────────────────────────────── */
 function toInputStr(d: Date) {
@@ -40,6 +63,10 @@ function generateDates(months: number, startDate: Date): Date[] {
   })
 }
 function toIso(d: Date) { return d.toISOString().slice(0, 10) }
+function toIsoDateTime(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`
+}
 
 /* ─── 型 ────────────────────────────────────────────── */
 interface BarDef {
@@ -69,13 +96,17 @@ type ApiBar = {
   colorBg: string; colorFg: string; startDate: string; endDate: string
   assigneeId: string; assigneeName: string
 }
+function parseApiDate(s: string): Date {
+  // "YYYY-MM-DDTHH:MM:SS" → local time / "YYYY-MM-DD" → local midnight
+  return s.includes("T") ? new Date(s) : new Date(s + "T00:00:00")
+}
 function apiBarToBarDef(b: ApiBar): BarDef {
   return {
     id: b.id, deviceId: b.deviceId,
     taskId: b.taskId, process: b.taskName,
     colorBg: b.colorBg, colorFg: b.colorFg,
-    startDate: new Date(b.startDate + "T00:00:00"),
-    endDate:   new Date(b.endDate   + "T00:00:00"),
+    startDate: parseApiDate(b.startDate),
+    endDate:   parseApiDate(b.endDate),
     assigneeId: b.assigneeId, assignee: b.assigneeName,
   }
 }
@@ -118,7 +149,6 @@ function SkeletonGrid({ ROW_HDR_W, tasks }: SkeletonProps) {
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden bg-white animate-pulse select-none">
-      {/* ツールバー骨格 */}
       <div className="shrink-0 flex items-center px-3 py-1.5 bg-gray-100 border-b border-gray-300 gap-3">
         <div className="h-5 w-40 bg-gray-200 rounded" />
         <div className="h-5 w-28 bg-gray-200 rounded" />
@@ -133,40 +163,28 @@ function SkeletonGrid({ ROW_HDR_W, tasks }: SkeletonProps) {
           ))}
         </div>
       </div>
-
-      {/* グリッド骨格 */}
       <div className="flex-1 overflow-hidden flex flex-col">
-        {/* 日付ヘッダー */}
         <div className="shrink-0 flex border-b border-gray-200" style={{ height: HDR_H * 3 }}>
           <div className="shrink-0 bg-gray-200" style={{ width: ROW_HDR_W }} />
           <div className="flex-1 bg-gray-100" />
         </div>
-        {/* データ行 */}
         <div className="flex-1 overflow-hidden">
           {Array.from({ length: 20 }, (_, i) => (
             <div key={i} className="flex border-b border-gray-100" style={{ height: CELL_SIZE }}>
-              <div
-                className="shrink-0 border-r border-gray-200 bg-gray-50 flex items-center pl-2"
-                style={{ width: ROW_HDR_W }}
-              >
+              <div className="shrink-0 border-r border-gray-200 bg-gray-50 flex items-center pl-2" style={{ width: ROW_HDR_W }}>
                 {i % 3 === 0 && <div className="h-2.5 bg-gray-200 rounded" style={{ width: ROW_HDR_W * 0.7 }} />}
               </div>
               <div className="flex-1 relative bg-white">
-                <div
-                  className="absolute inset-y-0.5 rounded"
-                  style={{
-                    left:  `${LEFTS[i % LEFTS.length]}%`,
-                    width: `${WIDTHS[i % WIDTHS.length]}%`,
-                    backgroundColor: BAR_COLORS[i % BAR_COLORS.length],
-                  }}
-                />
+                <div className="absolute inset-y-0.5 rounded" style={{
+                  left:  `${LEFTS[i % LEFTS.length]}%`,
+                  width: `${WIDTHS[i % WIDTHS.length]}%`,
+                  backgroundColor: BAR_COLORS[i % BAR_COLORS.length],
+                }} />
               </div>
             </div>
           ))}
         </div>
       </div>
-
-      {/* ステータスバー骨格 */}
       <div className="shrink-0 px-3 py-0.5 bg-gray-100 border-t border-gray-300">
         <div className="h-3 w-40 bg-gray-200 rounded" />
       </div>
@@ -180,16 +198,16 @@ interface SpreadsheetGridProps {
   devices:         DeviceInfo[]
   assignees:       AssigneeInfo[]
   tasks:           TaskInfo[]
-  visibleGroupIds?: string[]   // undefined = 全件表示
+  visibleGroupIds?: string[]
 }
 
 export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visibleGroupIds }: SpreadsheetGridProps) {
   const ROW_HDR_W = mode === "device" ? DEV_HDR_W : ASGN_HDR_W
 
-  /* ── スケジュールのみ内部フェッチ ── */
   const [loading,   setLoading  ] = useState(true)
   const [bars,      setBars     ] = useState<BarDef[]>([])
   const [seeding,   setSeeding  ] = useState(false)
+  const [viewMode,  setViewMode ] = useState<"day" | "slot">("day")
 
   useEffect(() => {
     fetch("/api/schedules").then(r => r.json()).then((scheds: ApiBar[]) => {
@@ -210,22 +228,68 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   })
 
   /* ── 日付・列数 ── */
-  const dates      = useMemo(() => generateDates(appliedMonths, appliedStartDate), [appliedMonths, appliedStartDate])
-  const cols       = dates.length
-  const weekendCols = useMemo(
-    () => new Set(dates.map((d, i) => (d.getDay() === 0 || d.getDay() === 6) ? i : -1).filter(i => i >= 0)),
-    [dates]
-  )
+  const dates = useMemo(() => generateDates(appliedMonths, appliedStartDate), [appliedMonths, appliedStartDate])
+
+  /* ── ビューモード依存の定数 ── */
+  const dataTop  = viewMode === "slot" ? HDR_H * 4 : HDR_H * 3
+  const totalCols = viewMode === "slot" ? dates.length * SLOT_COUNT : dates.length
+
+  const weekendCols = useMemo(() => {
+    const s = new Set<number>()
+    dates.forEach((d, i) => {
+      if (d.getDay() === 0 || d.getDay() === 6) {
+        if (viewMode === "day") {
+          s.add(i)
+        } else {
+          for (let k = 0; k < SLOT_COUNT; k++) s.add(i * SLOT_COUNT + k)
+        }
+      }
+    })
+    return s
+  }, [dates, viewMode])
 
   /* ── 日付↔列変換 ── */
-  const colToDate    = useCallback((col: number) => dates[Math.max(0, Math.min(cols-1, col))], [dates, cols])
+  const colToDate = useCallback((col: number): Date => {
+    if (viewMode === "day") {
+      return dates[Math.max(0, Math.min(dates.length - 1, col))]
+    }
+    const dayIdx  = Math.max(0, Math.min(dates.length - 1, Math.floor(col / SLOT_COUNT)))
+    const slotIdx = col % SLOT_COUNT
+    const d = new Date(dates[dayIdx])
+    const startHours = [8, 10, 13, 15, 17, 19]
+    d.setHours(startHours[slotIdx] ?? 8, 0, 0, 0)
+    return d
+  }, [dates, viewMode])
+
+  const colToEndDate = useCallback((col: number): Date => {
+    if (viewMode === "day") {
+      return dates[Math.max(0, Math.min(dates.length - 1, col))]
+    }
+    const dayIdx  = Math.max(0, Math.min(dates.length - 1, Math.floor(col / SLOT_COUNT)))
+    const slotIdx = col % SLOT_COUNT
+    const d = new Date(dates[dayIdx])
+    const endHours = [10, 12, 15, 17, 19, 21]
+    d.setHours(endHours[slotIdx] ?? 10, 0, 0, 0)
+    return d
+  }, [dates, viewMode])
+
   const barToViewCols = useCallback((bar: BarDef) => {
     const vm = dates[0].getTime()
-    return {
-      sc: Math.round((bar.startDate.getTime() - vm) / 86400000),
-      ec: Math.round((bar.endDate.getTime()   - vm) / 86400000),
+    if (viewMode === "day") {
+      return {
+        sc: Math.floor((bar.startDate.getTime() - vm) / 86400000),
+        ec: Math.floor((bar.endDate.getTime()   - vm) / 86400000),
+      }
     }
-  }, [dates])
+    const startDay  = Math.floor((bar.startDate.getTime() - vm) / 86400000)
+    const endDay    = Math.floor((bar.endDate.getTime()   - vm) / 86400000)
+    const startSlot = startHourToSlot(bar.startDate.getHours())
+    const endSlot   = endHourToSlot(bar.endDate.getHours())
+    return {
+      sc: startDay * SLOT_COUNT + startSlot,
+      ec: endDay   * SLOT_COUNT + endSlot,
+    }
+  }, [dates, viewMode])
 
   /* ── DOM refs ── */
   const containerRef    = useRef<HTMLDivElement>(null)
@@ -243,14 +307,12 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const [tooltip,        setTooltip       ] = useState<TooltipState | null>(null)
   const [visibleRows,    setVisibleRows   ] = useState({ start: 0, end: 79 })
 
-  /* ── タスクカラーマップ ── */
   const taskColorMap = useMemo(() => {
     const m: Record<string, { bg: string; fg: string }> = {}
     for (const t of tasks) m[t.id] = { bg: t.colorBg, fg: t.colorFg }
     return m
   }, [tasks])
 
-  /* ── グループ定義 (visibleGroupIds でフィルタ) ── */
   const groups = useMemo<GroupDef[]>(() => {
     const all: GroupDef[] = mode === "device"
       ? devices.map(d => ({ id: d.id, name: `${d.modelName} / ${d.serialNumber}` }))
@@ -265,7 +327,6 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     [mode]
   )
 
-  /* ── レイアウト計算 ── */
   const { placedBars, rowMetas, totalRows } = useMemo(
     () => computeLayout(bars, groups, getGroupId),
     [bars, groups, getGroupId]
@@ -316,10 +377,10 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     const c = containerRef.current; if (!c) return null
     const rect = getRect(); if (!rect) return null
     const relX = clientX - rect.left, relY = clientY - rect.top
-    if (relX < ROW_HDR_W || relY < DATA_TOP) return null
+    if (relX < ROW_HDR_W || relY < dataTop) return null
     const col = Math.floor((relX + c.scrollLeft - ROW_HDR_W) / CELL_SIZE)
-    const row = Math.floor((relY + c.scrollTop  - DATA_TOP ) / CELL_SIZE)
-    if (col < 0 || col >= cols || row < 0 || row >= totalRows) return null
+    const row = Math.floor((relY + c.scrollTop  - dataTop ) / CELL_SIZE)
+    if (col < 0 || col >= totalCols || row < 0 || row >= totalRows) return null
     return { row, col }
   }
 
@@ -328,7 +389,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     const el = selCellRef.current; if (!el) return
     el.style.display = "block"
     el.style.left   = `${ROW_HDR_W + col * CELL_SIZE}px`
-    el.style.top    = `${DATA_TOP  + row * CELL_SIZE}px`
+    el.style.top    = `${dataTop   + row * CELL_SIZE}px`
     el.style.width  = `${CELL_SIZE}px`
     el.style.height = `${CELL_SIZE}px`
   }
@@ -343,7 +404,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     const c0 = Math.min(drag.startCol, drag.curCol), c1 = Math.max(drag.startCol, drag.curCol)
     el.style.display = "block"
     el.style.left   = `${ROW_HDR_W + c0 * CELL_SIZE}px`
-    el.style.top    = `${DATA_TOP  + r0 * CELL_SIZE}px`
+    el.style.top    = `${dataTop   + r0 * CELL_SIZE}px`
     el.style.width  = `${(c1 - c0 + 1) * CELL_SIZE}px`
     el.style.height = `${(r1 - r0 + 1) * CELL_SIZE}px`
   }
@@ -352,9 +413,9 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight } = e.currentTarget
     rectCacheRef.current = null
-    const dataTop = Math.max(0, scrollTop - DATA_TOP)
-    const start = Math.max(0, Math.floor(dataTop / CELL_SIZE) - BUFFER_ROWS)
-    const end   = Math.min(totalRows - 1, Math.ceil((dataTop + clientHeight) / CELL_SIZE) + BUFFER_ROWS)
+    const scrolledPast = Math.max(0, scrollTop - dataTop)
+    const start = Math.max(0, Math.floor(scrolledPast / CELL_SIZE) - BUFFER_ROWS)
+    const end   = Math.min(totalRows - 1, Math.ceil((scrolledPast + clientHeight) / CELL_SIZE) + BUFFER_ROWS)
     setVisibleRows(prev => (prev.start === start && prev.end === end) ? prev : { start, end })
   }
 
@@ -404,7 +465,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const addBar = async (data: DialogFormData) => {
     const body = {
       deviceId: data.deviceId, taskId: data.taskId, assigneeId: data.assigneeId,
-      startDate: toIso(data.startDate), endDate: toIso(data.endDate),
+      startDate: toIsoDateTime(data.startDate), endDate: toIsoDateTime(data.endDate),
     }
     const created: ApiBar = await fetch("/api/schedules", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -416,7 +477,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const editBar = async (barId: string, data: DialogFormData) => {
     const body = {
       deviceId: data.deviceId, taskId: data.taskId, assigneeId: data.assigneeId,
-      startDate: toIso(data.startDate), endDate: toIso(data.endDate),
+      startDate: toIsoDateTime(data.startDate), endDate: toIsoDateTime(data.endDate),
     }
     const updated: ApiBar = await fetch(`/api/schedules/${barId}`, {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -450,8 +511,8 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
       deviceId:   mode === "device"   ? (targetGroup ?? b.deviceId)   : b.deviceId,
       assigneeId: mode === "assignee" ? (targetGroup ?? b.assigneeId) : b.assigneeId,
       taskId:     b.taskId,
-      startDate:  toIso(new Date(b.startDate.getTime() + offsetMs)),
-      endDate:    toIso(new Date(b.endDate.getTime()   + offsetMs)),
+      startDate: toIsoDateTime(new Date(b.startDate.getTime() + offsetMs)),
+      endDate:   toIsoDateTime(new Date(b.endDate.getTime()   + offsetMs)),
     }))
 
     const created: ApiBar[] = await Promise.all(
@@ -501,18 +562,31 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   /* ── 可視バー ── */
   const visibleBars = useMemo((): RenderedBar[] => {
     const viewStartMs = dates[0]?.getTime() ?? 0
-    const viewEndMs   = dates[cols - 1]?.getTime() ?? 0
+    const viewEndMs   = dates[dates.length - 1]?.getTime() ?? 0
     return placedBars
       .filter(b =>
         b.absoluteRow >= visibleRows.start && b.absoluteRow <= visibleRows.end &&
         b.endDate.getTime() >= viewStartMs && b.startDate.getTime() <= viewEndMs
       )
-      .map(b => ({
-        ...b,
-        viewStartCol: Math.max(0,      Math.round((b.startDate.getTime() - viewStartMs) / 86400000)),
-        viewEndCol:   Math.min(cols-1, Math.round((b.endDate.getTime()   - viewStartMs) / 86400000)),
-      }))
-  }, [placedBars, visibleRows, dates, cols])
+      .map(b => {
+        if (viewMode === "day") {
+          return {
+            ...b,
+            viewStartCol: Math.max(0,           Math.floor((b.startDate.getTime() - viewStartMs) / 86400000)),
+            viewEndCol:   Math.min(totalCols - 1, Math.floor((b.endDate.getTime()   - viewStartMs) / 86400000)),
+          }
+        }
+        const startDay  = Math.floor((b.startDate.getTime() - viewStartMs) / 86400000)
+        const endDay    = Math.floor((b.endDate.getTime()   - viewStartMs) / 86400000)
+        const startSlot = startHourToSlot(b.startDate.getHours())
+        const endSlot   = endHourToSlot(b.endDate.getHours())
+        return {
+          ...b,
+          viewStartCol: Math.max(0,           startDay * SLOT_COUNT + startSlot),
+          viewEndCol:   Math.min(totalCols - 1, endDay * SLOT_COUNT + endSlot),
+        }
+      })
+  }, [placedBars, visibleRows, dates, totalCols, viewMode])
 
   /* ── スタイルヘルパー ── */
   const colHdrStyle = (col: number, topPx: number): React.CSSProperties => ({
@@ -526,7 +600,6 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     ...extra,
   })
 
-  /* ── スケルトン表示 ── */
   if (loading) {
     return <SkeletonGrid ROW_HDR_W={ROW_HDR_W} tasks={tasks} />
   }
@@ -581,6 +654,22 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
           </button>
         </div>
 
+        {/* 表示モード切替 */}
+        <div className="flex items-center border border-gray-300 rounded overflow-hidden ml-1">
+          {(["day", "slot"] as const).map(vm => (
+            <button key={vm} onClick={() => setViewMode(vm)}
+              className={[
+                "px-2 py-0.5 text-xs font-medium transition-colors",
+                viewMode === vm
+                  ? "bg-blue-500 text-white"
+                  : "bg-white text-gray-600 hover:bg-gray-50",
+              ].join(" ")}
+            >
+              {vm === "day" ? "日単位" : "時間割"}
+            </button>
+          ))}
+        </div>
+
         <div className="ml-auto flex items-center gap-3 mr-2">
           {tasks.map(t => (
             <div key={t.id} className="flex items-center gap-1">
@@ -604,8 +693,8 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
       >
         <div style={{
           display: "grid",
-          gridTemplateColumns: `${ROW_HDR_W}px repeat(${cols}, ${CELL_SIZE}px)`,
-          width: ROW_HDR_W + CELL_SIZE * cols,
+          gridTemplateColumns: `${ROW_HDR_W}px repeat(${totalCols}, ${CELL_SIZE}px)`,
+          width: ROW_HDR_W + CELL_SIZE * totalCols,
           position: "relative",
         }}>
 
@@ -617,33 +706,74 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
               : <span style={{fontSize:10, fontWeight:700, color:"#6b7280"}}>担当者</span>
             }
           </div>
-          {dates.map((date, col) => {
-            const show = col === 0 || dates[col-1].getFullYear() !== date.getFullYear()
+          {Array.from({ length: totalCols }, (_, col) => {
+            const dayIdx = viewMode === "slot" ? Math.floor(col / SLOT_COUNT) : col
+            const date = dates[dayIdx]
+            const prevDayIdx = viewMode === "slot" ? Math.floor((col - 1) / SLOT_COUNT) : col - 1
+            const show = col === 0 || dates[prevDayIdx]?.getFullYear() !== date?.getFullYear()
             return (
               <div key={`y${col}`} style={colHdrStyle(col, 0)} className="relative">
-                {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-bold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{date.getFullYear()}</span>}
+                {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-bold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{date?.getFullYear()}</span>}
               </div>
             )
           })}
 
           {/* ━━━ 月ヘッダー ━━━ */}
           <div style={cornerStyle(HDR_H)} />
-          {dates.map((date, col) => {
-            const show = col === 0 || dates[col-1].getMonth() !== date.getMonth()
+          {Array.from({ length: totalCols }, (_, col) => {
+            const dayIdx = viewMode === "slot" ? Math.floor(col / SLOT_COUNT) : col
+            const date = dates[dayIdx]
+            const prevDayIdx = viewMode === "slot" ? Math.floor((col - 1) / SLOT_COUNT) : col - 1
+            const show = col === 0 || dates[prevDayIdx]?.getMonth() !== date?.getMonth()
             return (
               <div key={`m${col}`} style={colHdrStyle(col, HDR_H)} className="relative">
-                {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-semibold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{date.getMonth()+1}月</span>}
+                {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-semibold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{(date?.getMonth() ?? 0)+1}月</span>}
               </div>
             )
           })}
 
           {/* ━━━ 日ヘッダー ━━━ */}
-          <div style={cornerStyle(HDR_H*2)} />
-          {dates.map((date, col) => (
-            <div key={`d${col}`} style={colHdrStyle(col, HDR_H*2)} className="flex items-center justify-center">
-              <span className={`text-[9px] font-medium ${weekendCols.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>{date.getDate()}</span>
-            </div>
-          ))}
+          <div style={cornerStyle(HDR_H * 2)} />
+          {Array.from({ length: totalCols }, (_, col) => {
+            const dayIdx = viewMode === "slot" ? Math.floor(col / SLOT_COUNT) : col
+            const date = dates[dayIdx]
+            const isFirst = viewMode === "slot" ? col % SLOT_COUNT === 0 : true
+            const isWknd = weekendCols.has(col)
+            return (
+              <div key={`d${col}`} style={{
+                ...colHdrStyle(col, HDR_H * 2),
+                borderRight: viewMode === "slot" && (col + 1) % SLOT_COUNT === 0
+                  ? "1px solid #9ca3af" : "1px solid #d1d5db",
+              }} className="flex items-center justify-center">
+                {isFirst && (
+                  <span className={`text-[9px] font-medium ${isWknd ? "text-red-500 font-bold" : "text-gray-600"}`}>
+                    {date?.getDate()}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+
+          {/* ━━━ スロットヘッダー (スロットモードのみ) ━━━ */}
+          {viewMode === "slot" && (
+            <>
+              <div style={cornerStyle(HDR_H * 3)} />
+              {Array.from({ length: totalCols }, (_, col) => {
+                const slotIdx = col % SLOT_COUNT
+                const isDayEnd = (col + 1) % SLOT_COUNT === 0
+                return (
+                  <div key={`s${col}`} style={{
+                    ...colHdrStyle(col, HDR_H * 3),
+                    borderRight: isDayEnd ? "1px solid #9ca3af" : "1px solid #d1d5db",
+                  }} className="flex items-center justify-center">
+                    <span className="text-[7px] font-semibold text-gray-500 leading-none">
+                      {SLOT_ABBREV[slotIdx]}
+                    </span>
+                  </div>
+                )
+              })}
+            </>
+          )}
 
           {/* ━━━ 上部スペーサー ━━━ */}
           {visibleRows.start > 0 && (
@@ -693,11 +823,12 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
                   )}
                 </div>
 
-                {dates.map((_, col) => (
+                {Array.from({ length: totalCols }, (_, col) => (
                   <div key={`${row},${col}`} style={{
                     width: CELL_SIZE, height: CELL_SIZE,
                     backgroundColor: weekendCols.has(col) ? "#fff1f2" : bg,
-                    borderRight: "1px solid #e5e7eb",
+                    borderRight: viewMode === "slot" && (col + 1) % SLOT_COUNT === 0
+                      ? "1px solid #94a3b8" : "1px solid #e5e7eb",
                     borderBottom: `${bbW} solid ${bbC}`,
                     borderTop: btW ? `${btW} solid ${btC}` : undefined,
                   }} />
@@ -719,7 +850,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
               <div key={bar.id} style={{
                 position: "absolute",
                 left:   ROW_HDR_W + bar.viewStartCol * CELL_SIZE,
-                top:    DATA_TOP  + bar.absoluteRow * CELL_SIZE + 1,
+                top:    dataTop   + bar.absoluteRow * CELL_SIZE + 1,
                 width:  (bar.viewEndCol - bar.viewStartCol + 1) * CELL_SIZE,
                 height: CELL_SIZE - 2,
                 backgroundColor: c.bg, color: c.fg,
@@ -773,7 +904,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
 
       {/* ステータスバー */}
       <div className="shrink-0 px-3 py-0.5 bg-gray-100 border-t border-gray-300 text-[11px] text-gray-500 flex items-center gap-4">
-        <span>{groups.length} {mode === "device" ? "装置" : "担当者"} / {totalRows} 行 × {cols} 列 / 予定 {bars.length} 件</span>
+        <span>{groups.length} {mode === "device" ? "装置" : "担当者"} / {totalRows} 行 × {dates.length} 日{viewMode === "slot" ? ` (${totalCols} 列)` : ""} / 予定 {bars.length} 件</span>
         {selectedBarIds.size > 0 && <span className="text-blue-600 font-semibold">{selectedBarIds.size} 件選択中</span>}
         {copiedBars.length > 0 && <span className="text-purple-600">📋 {copiedBars.length} 件コピー済み</span>}
         <span className="text-gray-400 ml-auto">右クリック: メニュー｜ドラッグ: 複数選択｜Shift/Ctrl: 追加選択</span>
@@ -791,7 +922,8 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
               mode: "new",
               deviceId:          mode === "device"   ? (meta?.groupId ?? devices[0]?.id ?? "")   : devices[0]?.id ?? "",
               defaultAssigneeId: mode === "assignee" ? (meta?.groupId ?? assignees[0]?.id ?? "") : undefined,
-              startDate: colToDate(contextMenu.col), endDate: colToDate(contextMenu.col),
+              startDate: colToDate(contextMenu.col),
+              endDate:   colToEndDate(contextMenu.col),
             })
           }}
           onPaste={() => { if (contextMenu.type === "cell") pasteBar(contextMenu.row, contextMenu.col) }}
@@ -812,7 +944,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
         <ScheduleDialog
           mode={dialog.mode} initial={init}
           devices={devices} tasks={tasks} assignees={assignees}
-          minDate={dates[0]} maxDate={dates[cols-1]}
+          minDate={dates[0]} maxDate={dates[totalCols > 0 ? dates.length - 1 : 0]}
           onSave={data => dialog.mode === "new" ? addBar(data) : editBar(dialog.barId, data)}
           onClose={() => setDialog(null)}
         />

@@ -32,8 +32,19 @@ interface Props {
   onClose: () => void
 }
 
+const TIME_SLOTS = [
+  { label: "午前1", start: [8,  0], end: [10, 0] },
+  { label: "午前2", start: [10, 0], end: [12, 0] },
+  { label: "午後1", start: [13, 0], end: [15, 0] },
+  { label: "午後2", start: [15, 0], end: [17, 0] },
+  { label: "残業1", start: [17, 0], end: [19, 0] },
+  { label: "残業2", start: [19, 0], end: [21, 0] },
+] as const
+
 function fmtDate(d: Date) {
-  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`
+  const h = String(d.getHours()).padStart(2, "0")
+  const m = String(d.getMinutes()).padStart(2, "0")
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${h}:${m}`
 }
 
 export function ScheduleDialog({ mode, initial, devices, tasks, assignees, minDate, maxDate, onSave, onClose }: Props) {
@@ -63,14 +74,30 @@ export function ScheduleDialog({ mode, initial, devices, tasks, assignees, minDa
   const handleDateChange = (d: Date) => {
     setError("")
     if (activeField === "start") {
-      setStartDate(d)
-      if (d > endDate) setEndDate(d)
+      const next = new Date(d)
+      next.setHours(startDate.getHours(), startDate.getMinutes(), 0, 0)
+      setStartDate(next)
+      if (next > endDate) setEndDate(next)
       setActiveField("end")
     } else {
-      setEndDate(d)
-      if (d < startDate) setStartDate(d)
+      const next = new Date(d)
+      next.setHours(endDate.getHours(), endDate.getMinutes(), 0, 0)
+      setEndDate(next)
+      if (next < startDate) setStartDate(next)
     }
   }
+
+  const handleTimeSlot = (slot: typeof TIME_SLOTS[number]) => {
+    const [h, m] = activeField === "start" ? slot.start : slot.end
+    if (activeField === "start") {
+      const next = new Date(startDate); next.setHours(h, m, 0, 0); setStartDate(next)
+    } else {
+      const next = new Date(endDate);   next.setHours(h, m, 0, 0); setEndDate(next)
+    }
+    setError("")
+  }
+
+  const activeDate = activeField === "start" ? startDate : endDate
 
   const label = "block text-xs font-semibold text-gray-500 mb-1"
   const sel   = "w-full border border-gray-300 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
@@ -134,6 +161,27 @@ export function ScheduleDialog({ mode, initial, devices, tasks, assignees, minDa
               minDate={minDate} maxDate={maxDate}
               rangeStart={startDate} rangeEnd={endDate}
             />
+            <div className="grid grid-cols-3 gap-1.5 mt-3 pt-3 border-t border-gray-200">
+              {TIME_SLOTS.map(slot => {
+                const [h, m] = activeField === "start" ? slot.start : slot.end
+                const isActive = activeDate.getHours() === h && activeDate.getMinutes() === m
+                return (
+                  <button
+                    key={slot.label}
+                    type="button"
+                    onClick={() => handleTimeSlot(slot)}
+                    className={[
+                      "py-1.5 rounded-lg text-xs font-semibold transition-colors",
+                      isActive
+                        ? "bg-blue-500 text-white shadow-sm"
+                        : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-100",
+                    ].join(" ")}
+                  >
+                    {slot.label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
         </div>
 

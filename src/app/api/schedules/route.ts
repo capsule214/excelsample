@@ -13,15 +13,15 @@ const SELECT_SQL = `
 
 function toRow(r: Record<string, string>) {
   return {
-    id:          r.id,
-    deviceId:    r.device_id,
-    taskId:      r.task_id,
-    taskName:    r.task_name,
-    colorBg:     r.color_bg,
-    colorFg:     r.color_fg,
-    startDate:   r.start_date,
-    endDate:     r.end_date,
-    assigneeId:  r.assignee_id,
+    id:           r.id,
+    deviceId:     r.device_id,
+    taskId:       r.task_id,
+    taskName:     r.task_name,
+    colorBg:      r.color_bg,
+    colorFg:      r.color_fg,
+    startDate:    r.start_date,
+    endDate:      r.end_date,
+    assigneeId:   r.assignee_id,
     assigneeName: r.assignee_name,
   }
 }
@@ -38,8 +38,6 @@ export async function POST(req: NextRequest) {
     "INSERT INTO schedules (id, device_id, task_id, assignee_id, start_date, end_date) VALUES (?,?,?,?,?,?)"
   ).run(id, body.deviceId, body.taskId, body.assigneeId, body.startDate, body.endDate)
 
-  const row = db.prepare(`${SELECT_SQL} LIMIT 1`).get() // re-fetch is cleaner but we need the specific row
-  // fetch the inserted row
   const inserted = db.prepare(`
     SELECT s.id, s.device_id, s.task_id, t.task_name, t.color_bg, t.color_fg,
            s.start_date, s.end_date, s.assignee_id, a.name as assignee_name
