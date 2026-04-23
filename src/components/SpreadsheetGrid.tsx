@@ -63,6 +63,24 @@ function generateDates(months: number, startDate: Date): Date[] {
   })
 }
 function toIso(d: Date) { return d.toISOString().slice(0, 10) }
+/**
+ * その日が属する「日曜〜土曜」の週を確定し、
+ * 週の土曜日が翌月なら翌月の第1週として返す。
+ */
+function getWeekInfo(date: Date): { year: number; month: number; weekNum: number } {
+  const dow  = date.getDay()
+  // この週の日曜・土曜（ローカル日付算術）
+  const sun  = new Date(date.getFullYear(), date.getMonth(), date.getDate() - dow)
+  const sat  = new Date(date.getFullYear(), date.getMonth(), date.getDate() - dow + 6)
+  // 帰属月は土曜の月（月跨ぎなら翌月）
+  const oY   = sat.getFullYear(), oM = sat.getMonth()
+  // 帰属月の第1日曜（その月の1日以前の直近日曜）
+  const day1 = new Date(oY, oM, 1)
+  const firstSun = new Date(oY, oM, 1 - day1.getDay())
+  const weekNum  = Math.round((sun.getTime() - firstSun.getTime()) / (7 * 86400000)) + 1
+  return { year: oY, month: oM, weekNum }
+}
+const DOW_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const
 function toIsoDateTime(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0")
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`
@@ -231,7 +249,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const dates = useMemo(() => generateDates(appliedMonths, appliedStartDate), [appliedMonths, appliedStartDate])
 
   /* ── ビューモード依存の定数 ── */
-  const dataTop  = viewMode === "slot" ? HDR_H * 4 : HDR_H * 3
+  const dataTop  = HDR_H * 4   // 日モード: 年月/週/日/曜日, スロットモード: 年/月/日/スロット
   const totalCols = viewMode === "slot" ? dates.length * SLOT_COUNT : dates.length
 
   const weekendCols = useMemo(() => {
@@ -698,7 +716,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
           position: "relative",
         }}>
 
-          {/* ━━━ 年ヘッダー ━━━ */}
+          {/* ━━━ ヘッダー行コーナー (共通: モード名ラベル) ━━━ */}
           <div style={cornerStyle(0, { display:"flex", alignItems:"center", paddingLeft:6 })}>
             {mode === "device"
               ? <><span style={{width:DEV_HDR_W1, fontSize:9, fontWeight:700, color:"#6b7280"}}>機種 / 製番</span>
@@ -706,60 +724,140 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
               : <span style={{fontSize:10, fontWeight:700, color:"#6b7280"}}>担当者</span>
             }
           </div>
-          {Array.from({ length: totalCols }, (_, col) => {
-            const dayIdx = viewMode === "slot" ? Math.floor(col / SLOT_COUNT) : col
-            const date = dates[dayIdx]
-            const prevDayIdx = viewMode === "slot" ? Math.floor((col - 1) / SLOT_COUNT) : col - 1
-            const show = col === 0 || dates[prevDayIdx]?.getFullYear() !== date?.getFullYear()
-            return (
-              <div key={`y${col}`} style={colHdrStyle(col, 0)} className="relative">
-                {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-bold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{date?.getFullYear()}</span>}
-              </div>
-            )
-          })}
 
-          {/* ━━━ 月ヘッダー ━━━ */}
-          <div style={cornerStyle(HDR_H)} />
-          {Array.from({ length: totalCols }, (_, col) => {
-            const dayIdx = viewMode === "slot" ? Math.floor(col / SLOT_COUNT) : col
-            const date = dates[dayIdx]
-            const prevDayIdx = viewMode === "slot" ? Math.floor((col - 1) / SLOT_COUNT) : col - 1
-            const show = col === 0 || dates[prevDayIdx]?.getMonth() !== date?.getMonth()
-            return (
-              <div key={`m${col}`} style={colHdrStyle(col, HDR_H)} className="relative">
-                {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-semibold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{(date?.getMonth() ?? 0)+1}月</span>}
-              </div>
-            )
-          })}
-
-          {/* ━━━ 日ヘッダー ━━━ */}
-          <div style={cornerStyle(HDR_H * 2)} />
-          {Array.from({ length: totalCols }, (_, col) => {
-            const dayIdx = viewMode === "slot" ? Math.floor(col / SLOT_COUNT) : col
-            const date = dates[dayIdx]
-            const isFirst = viewMode === "slot" ? col % SLOT_COUNT === 0 : true
-            const isWknd = weekendCols.has(col)
-            return (
-              <div key={`d${col}`} style={{
-                ...colHdrStyle(col, HDR_H * 2),
-                borderRight: viewMode === "slot" && (col + 1) % SLOT_COUNT === 0
-                  ? "1px solid #9ca3af" : "1px solid #d1d5db",
-              }} className="flex items-center justify-center">
-                {isFirst && (
-                  <span className={`text-[9px] font-medium ${isWknd ? "text-red-500 font-bold" : "text-gray-600"}`}>
-                    {date?.getDate()}
-                  </span>
-                )}
-              </div>
-            )
-          })}
-
-          {/* ━━━ スロットヘッダー (スロットモードのみ) ━━━ */}
-          {viewMode === "slot" && (
+          {viewMode === "day" ? (
             <>
+              {/* ━━━ [日モード] 1行目: 年月 (結合) ━━━ */}
+              {(() => {
+                const cells: React.ReactNode[] = []
+                let c = 0
+                while (c < dates.length) {
+                  const d = dates[c]
+                  const yr = d.getFullYear(), mo = d.getMonth()
+                  let span = 0
+                  while (c + span < dates.length && dates[c+span].getFullYear() === yr && dates[c+span].getMonth() === mo) span++
+                  cells.push(
+                    <div key={`ym${c}`} style={{
+                      gridColumn: `span ${span}`,
+                      height: HDR_H, position: "sticky", top: 0, zIndex: 20,
+                      backgroundColor: "#f3f4f6",
+                      borderRight: "1px solid #9ca3af", borderBottom: "1px solid #d1d5db",
+                      display: "flex", alignItems: "center", paddingLeft: 4, overflow: "hidden",
+                    }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>
+                        {yr}年{mo+1}月
+                      </span>
+                    </div>
+                  )
+                  c += span
+                }
+                return cells
+              })()}
+
+              {/* ━━━ [日モード] 2行目: 第何週 (結合・土曜帰属ルール) ━━━ */}
+              <div style={cornerStyle(HDR_H)} />
+              {(() => {
+                const cells: React.ReactNode[] = []
+                let c = 0
+                while (c < dates.length) {
+                  const info = getWeekInfo(dates[c])
+                  let span = 0
+                  while (c + span < dates.length) {
+                    const ni = getWeekInfo(dates[c + span])
+                    if (ni.year !== info.year || ni.month !== info.month || ni.weekNum !== info.weekNum) break
+                    span++
+                  }
+                  cells.push(
+                    <div key={`wk${c}`} style={{
+                      gridColumn: `span ${span}`,
+                      height: HDR_H, position: "sticky", top: HDR_H, zIndex: 20,
+                      backgroundColor: "#f3f4f6",
+                      borderRight: "1px solid #9ca3af", borderBottom: "1px solid #d1d5db",
+                      display: "flex", alignItems: "center", paddingLeft: 4, overflow: "hidden",
+                    }}>
+                      <span style={{ fontSize: 9, fontWeight: 600, color: "#4b5563", whiteSpace: "nowrap" }}>
+                        第{info.weekNum}週
+                      </span>
+                    </div>
+                  )
+                  c += span
+                }
+                return cells
+              })()}
+
+              {/* ━━━ [日モード] 3行目: 日 ━━━ */}
+              <div style={cornerStyle(HDR_H * 2)} />
+              {dates.map((date, col) => (
+                <div key={`d${col}`} style={colHdrStyle(col, HDR_H * 2)} className="flex items-center justify-center">
+                  <span className={`text-[9px] font-medium ${weekendCols.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>
+                    {date.getDate()}
+                  </span>
+                </div>
+              ))}
+
+              {/* ━━━ [日モード] 4行目: 曜日 ━━━ */}
+              <div style={cornerStyle(HDR_H * 3)} />
+              {dates.map((date, col) => {
+                const dow = date.getDay()
+                return (
+                  <div key={`dw${col}`} style={colHdrStyle(col, HDR_H * 3)} className="flex items-center justify-center">
+                    <span className={`text-[9px] font-medium ${dow === 0 ? "text-red-500" : dow === 6 ? "text-blue-500" : "text-gray-500"}`}>
+                      {DOW_LABELS[dow]}
+                    </span>
+                  </div>
+                )
+              })}
+            </>
+          ) : (
+            <>
+              {/* ━━━ [スロットモード] 1行目: 年 ━━━ */}
+              {Array.from({ length: totalCols }, (_, col) => {
+                const dayIdx = Math.floor(col / SLOT_COUNT)
+                const date = dates[dayIdx]
+                const show = col === 0 || dates[Math.floor((col-1)/SLOT_COUNT)]?.getFullYear() !== date?.getFullYear()
+                return (
+                  <div key={`y${col}`} style={colHdrStyle(col, 0)} className="relative">
+                    {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-bold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{date?.getFullYear()}</span>}
+                  </div>
+                )
+              })}
+
+              {/* ━━━ [スロットモード] 2行目: 月 ━━━ */}
+              <div style={cornerStyle(HDR_H)} />
+              {Array.from({ length: totalCols }, (_, col) => {
+                const dayIdx = Math.floor(col / SLOT_COUNT)
+                const date = dates[dayIdx]
+                const show = col === 0 || dates[Math.floor((col-1)/SLOT_COUNT)]?.getMonth() !== date?.getMonth()
+                return (
+                  <div key={`m${col}`} style={colHdrStyle(col, HDR_H)} className="relative">
+                    {show && <span className="absolute inset-y-0 left-0 flex items-center pl-0.5 text-[9px] font-semibold text-gray-700 whitespace-nowrap" style={{zIndex:1}}>{(date?.getMonth() ?? 0)+1}月</span>}
+                  </div>
+                )
+              })}
+
+              {/* ━━━ [スロットモード] 3行目: 日 ━━━ */}
+              <div style={cornerStyle(HDR_H * 2)} />
+              {Array.from({ length: totalCols }, (_, col) => {
+                const dayIdx = Math.floor(col / SLOT_COUNT)
+                const date = dates[dayIdx]
+                const isDayEnd = (col + 1) % SLOT_COUNT === 0
+                return (
+                  <div key={`d${col}`} style={{
+                    ...colHdrStyle(col, HDR_H * 2),
+                    borderRight: isDayEnd ? "1px solid #9ca3af" : "1px solid #d1d5db",
+                  }} className="flex items-center justify-center">
+                    {col % SLOT_COUNT === 0 && (
+                      <span className={`text-[9px] font-medium ${weekendCols.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>
+                        {date?.getDate()}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+
+              {/* ━━━ [スロットモード] 4行目: スロットラベル ━━━ */}
               <div style={cornerStyle(HDR_H * 3)} />
               {Array.from({ length: totalCols }, (_, col) => {
-                const slotIdx = col % SLOT_COUNT
                 const isDayEnd = (col + 1) % SLOT_COUNT === 0
                 return (
                   <div key={`s${col}`} style={{
@@ -767,7 +865,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
                     borderRight: isDayEnd ? "1px solid #9ca3af" : "1px solid #d1d5db",
                   }} className="flex items-center justify-center">
                     <span className="text-[7px] font-semibold text-gray-500 leading-none">
-                      {SLOT_ABBREV[slotIdx]}
+                      {SLOT_ABBREV[col % SLOT_COUNT]}
                     </span>
                   </div>
                 )
