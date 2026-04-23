@@ -1,22 +1,22 @@
 import { NextResponse } from "next/server"
-import db from "@/lib/db"
+import { initDb, Device, ModelMaster } from "@/lib/sequelize"
 
-export function GET() {
-  const rows = db.prepare(`
-    SELECT d.device_id, d.model_id, m.model_name, d.serial_number, d.required_delivery_date
-    FROM devices d
-    JOIN models m ON d.model_id = m.model_id
-    ORDER BY CAST(SUBSTR(d.device_id, 2) AS INTEGER)
-  `).all() as {
-    device_id: string; model_id: string; model_name: string
-    serial_number: string; required_delivery_date: string | null
-  }[]
+export async function GET() {
+  await initDb()
+  const rows = await Device.findAll({
+    include: [{ model: ModelMaster, as: "model", attributes: ["model_name"] }],
+  })
 
-  return NextResponse.json(rows.map(r => ({
-    id:                   r.device_id,
-    modelId:              r.model_id,
-    modelName:            r.model_name,
-    serialNumber:         r.serial_number,
-    requiredDeliveryDate: r.required_delivery_date,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sorted = (rows.map(r => r.toJSON()) as any[]).sort(
+    (a, b) => parseInt(a.device_id.slice(1)) - parseInt(b.device_id.slice(1))
+  )
+
+  return NextResponse.json(sorted.map(d => ({
+    id:                   d.device_id,
+    modelId:              d.model_id,
+    modelName:            d.model?.model_name,
+    serialNumber:         d.serial_number,
+    requiredDeliveryDate: d.required_delivery_date,
   })))
 }

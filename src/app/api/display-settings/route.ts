@@ -1,33 +1,34 @@
 import { NextRequest, NextResponse } from "next/server"
-import db from "@/lib/db"
+import { initDb, Device, Assignee, DisplaySetting } from "@/lib/sequelize"
 
 export async function GET() {
-  const devRow  = db.prepare("SELECT value FROM display_settings WHERE setting_key = 'visible_devices'").get()   as { value: string } | undefined
-  const asgnRow = db.prepare("SELECT value FROM display_settings WHERE setting_key = 'visible_assignees'").get() as { value: string } | undefined
+  await initDb()
+  const [devRow, asgnRow] = await Promise.all([
+    DisplaySetting.findOne({ where: { setting_key: "visible_devices" } }),
+    DisplaySetting.findOne({ where: { setting_key: "visible_assignees" } }),
+  ])
 
-  // 設定未保存の場合は全件を返す
   const deviceIds: string[] = devRow
-    ? JSON.parse(devRow.value)
-    : (db.prepare("SELECT device_id FROM devices ORDER BY CAST(SUBSTR(device_id,2) AS INTEGER)").all() as { device_id: string }[]).map(d => d.device_id)
+    ? JSON.parse((devRow.toJSON() as { value: string }).value)
+    : (await Device.findAll()).map(d => (d.toJSON() as { device_id: string }).device_id)
+      .sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)))
 
   const assigneeIds: string[] = asgnRow
-    ? JSON.parse(asgnRow.value)
-    : (db.prepare("SELECT assignee_id FROM assignees ORDER BY assignee_id").all() as { assignee_id: string }[]).map(a => a.assignee_id)
+    ? JSON.parse((asgnRow.toJSON() as { value: string }).value)
+    : (await Assignee.findAll({ order: [["assignee_id", "ASC"]] }))
+        .map(a => (a.toJSON() as { assignee_id: string }).assignee_id)
 
   return NextResponse.json({ deviceIds, assigneeIds })
 }
 
 export async function PUT(req: NextRequest) {
+  await initDb()
   const body = await req.json()
 
-  const upsert = db.prepare(
-    "INSERT INTO display_settings (setting_key, value) VALUES (?,?) ON CONFLICT(setting_key) DO UPDATE SET value=excluded.value"
-  )
-
-  db.transaction(() => {
-    if (body.deviceIds  !== undefined) upsert.run("visible_devices",   JSON.stringify(body.deviceIds))
-    if (body.assigneeIds !== undefined) upsert.run("visible_assignees", JSON.stringify(body.assigneeIds))
-  })()
+  await Promise.all([
+    body.deviceIds  !== undefined && DisplaySetting.upsert({ setting_key: "visible_devices",   value: JSON.stringify(body.deviceIds) }),
+    body.assigneeIds !== undefined && DisplaySetting.upsert({ setting_key: "visible_assignees", value: JSON.stringify(body.assigneeIds) }),
+  ])
 
   return NextResponse.json({ ok: true })
 }

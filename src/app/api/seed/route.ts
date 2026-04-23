@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import db from "@/lib/db"
+import { initDb, Device, Task, Assignee, Schedule } from "@/lib/sequelize"
 import { randomUUID } from "crypto"
 
 function makeLCG(seed: number) {
@@ -8,6 +8,7 @@ function makeLCG(seed: number) {
 }
 
 export async function POST(req: NextRequest) {
+  await initDb()
   const { count = 1000, baseDate, months = 4, seedNum = 42 } = await req.json()
 
   const base = baseDate ? new Date(baseDate) : new Date()
@@ -16,41 +17,43 @@ export async function POST(req: NextRequest) {
   endDate.setMonth(endDate.getMonth() + months)
   const cols = Math.round((endDate.getTime() - base.getTime()) / 86400000)
 
-  const devices   = db.prepare("SELECT device_id FROM devices ORDER BY CAST(SUBSTR(device_id,2) AS INTEGER)").all() as { device_id: string }[]
-  const tasks     = db.prepare("SELECT task_id FROM tasks ORDER BY sort_order").all() as { task_id: string }[]
-  const assignees = db.prepare("SELECT assignee_id FROM assignees ORDER BY assignee_id").all() as { assignee_id: string }[]
+  const [devices, tasks, assignees] = await Promise.all([
+    Device.findAll(),
+    Task.findAll({ order: [["sort_order", "ASC"]] }),
+    Assignee.findAll({ order: [["assignee_id", "ASC"]] }),
+  ])
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const devList  = devices.map(d => (d.toJSON() as any).device_id as string)
+    .sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)))
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const taskList = tasks.map(t => (t.toJSON() as any).task_id as string)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const asgnList = assignees.map(a => (a.toJSON() as any).assignee_id as string)
 
   const rand = makeLCG(seedNum)
-  const rows: [string,string,string,string,string,string][] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows: any[] = []
   let id = 0
 
-  for (const dev of devices) {
+  for (const devId of devList) {
     let dayOffset = Math.floor(rand() * 10)
     for (let j = 0; j < 10; j++) {
-      const task = tasks[j % tasks.length]
+      const task = taskList[j % taskList.length]
       const len  = 3 + Math.floor(rand() * 12)
       const sc   = Math.min(dayOffset, cols - 2)
       const ec   = Math.min(sc + len, cols - 1)
-      const asgn = assignees[(++id) % assignees.length]
+      const asgn = asgnList[(++id) % asgnList.length]
       const sd   = new Date(base); sd.setDate(base.getDate() + sc)
       const ed   = new Date(base); ed.setDate(base.getDate() + ec)
-      rows.push([
-        randomUUID(), dev.device_id, task.task_id, asgn.assignee_id,
-        sd.toISOString().slice(0, 10), ed.toISOString().slice(0, 10),
-      ])
+      rows.push({ id: randomUUID(), device_id: devId, task_id: task, assignee_id: asgn, start_date: sd.toISOString().slice(0, 10), end_date: ed.toISOString().slice(0, 10) })
       dayOffset = ec + 1 + Math.floor(rand() * 5)
       if (dayOffset >= cols) break
     }
   }
 
-  const insert = db.prepare(
-    "INSERT INTO schedules (id, device_id, task_id, assignee_id, start_date, end_date) VALUES (?,?,?,?,?,?)"
-  )
-  const tx = db.transaction(() => {
-    db.prepare("DELETE FROM schedules").run()
-    for (const row of rows.slice(0, count)) insert.run(...row)
-  })
-  tx()
+  await Schedule.destroy({ truncate: true })
+  await Schedule.bulkCreate(rows.slice(0, count))
 
   return NextResponse.json({ seeded: Math.min(rows.length, count) })
 }

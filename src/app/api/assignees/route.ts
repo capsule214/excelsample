@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server"
-import db from "@/lib/db"
+import { initDb, Assignee } from "@/lib/sequelize"
 
-export function GET() {
-  const rows = db.prepare("SELECT assignee_id, name FROM assignees ORDER BY assignee_id").all() as {
-    assignee_id: string; name: string
-  }[]
-  return NextResponse.json(rows.map(r => ({ id: r.assignee_id, name: r.name })))
+export async function GET() {
+  await initDb()
+  const rows = await Assignee.findAll({ order: [["assignee_id", "ASC"]] })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return NextResponse.json((rows.map(r => r.toJSON()) as any[]).map(r => ({ id: r.assignee_id, name: r.name })))
 }
