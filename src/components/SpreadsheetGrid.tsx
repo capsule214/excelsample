@@ -351,8 +351,19 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   )
 
   useEffect(() => {
-    setVisibleRows(prev => ({ start: prev.start, end: Math.min(totalRows - 1, prev.end) }))
-  }, [totalRows])
+    const el = containerRef.current
+    if (!el || totalRows === 0) return
+    const { scrollTop, clientHeight } = el
+    // hidden クラス(display:none)で clientHeight=0 の場合は全行を描画対象にする
+    if (clientHeight === 0) {
+      setVisibleRows({ start: 0, end: totalRows - 1 })
+      return
+    }
+    const scrolledPast = Math.max(0, scrollTop - dataTop)
+    const start = Math.max(0, Math.floor(scrolledPast / CELL_SIZE) - BUFFER_ROWS)
+    const end   = Math.min(totalRows - 1, Math.ceil((scrolledPast + clientHeight) / CELL_SIZE) + BUFFER_ROWS)
+    setVisibleRows({ start, end })
+  }, [totalRows, loading, dataTop])
 
   /* ── 適用ボタン ── */
   const handleApply = async () => {
