@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { initDb, Schedule, Task, Assignee } from "@/lib/sequelize"
+import { initDb, Schedule, Task, Assignee, Location } from "@/lib/sequelize"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toRow(r: any) {
@@ -14,12 +14,15 @@ function toRow(r: any) {
     endDate:      r.end_date,
     assigneeId:   r.assignee_id,
     assigneeName: r.assignee?.name,
+    locationId:   r.location_id   ?? "",
+    locationName: r.location?.name ?? "",
   }
 }
 
 const INCLUDE = [
   { model: Task,     as: "task",     attributes: ["task_name", "color_bg", "color_fg"] },
   { model: Assignee, as: "assignee", attributes: ["name"] },
+  { model: Location, as: "location", attributes: ["name"], required: false },
 ]
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -28,7 +31,14 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   const body   = await req.json()
 
   await Schedule.update(
-    { device_id: body.deviceId, task_id: body.taskId, assignee_id: body.assigneeId, start_date: body.startDate, end_date: body.endDate },
+    {
+      device_id:   body.deviceId,
+      task_id:     body.taskId,
+      assignee_id: body.assigneeId,
+      location_id: body.locationId || null,
+      start_date:  body.startDate,
+      end_date:    body.endDate,
+    },
     { where: { id } }
   )
 

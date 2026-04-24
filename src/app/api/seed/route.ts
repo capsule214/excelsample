@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { initDb, Device, Task, Assignee, Schedule } from "@/lib/sequelize"
+import { initDb, Device, Task, Assignee, Location, Schedule, LOCATION_LIST } from "@/lib/sequelize"
 import { randomUUID } from "crypto"
 
 function makeLCG(seed: number) {
@@ -17,10 +17,11 @@ export async function POST(req: NextRequest) {
   endDate.setMonth(endDate.getMonth() + months)
   const cols = Math.round((endDate.getTime() - base.getTime()) / 86400000)
 
-  const [devices, tasks, assignees] = await Promise.all([
+  const [devices, tasks, assignees, locations] = await Promise.all([
     Device.findAll(),
     Task.findAll({ order: [["sort_order", "ASC"]] }),
     Assignee.findAll({ order: [["assignee_id", "ASC"]] }),
+    Location.findAll({ order: [["sort_order", "ASC"]] }),
   ])
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,6 +31,11 @@ export async function POST(req: NextRequest) {
   const taskList = tasks.map(t => (t.toJSON() as any).task_id as string)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const asgnList = assignees.map(a => (a.toJSON() as any).assignee_id as string)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const locList  = locations.length > 0
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ? locations.map(l => (l.toJSON() as any).location_id as string)
+    : LOCATION_LIST.map(l => l.location_id)
 
   const rand = makeLCG(seedNum)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,9 +50,10 @@ export async function POST(req: NextRequest) {
       const sc   = Math.min(dayOffset, cols - 2)
       const ec   = Math.min(sc + len, cols - 1)
       const asgn = asgnList[(++id) % asgnList.length]
+      const loc  = locList[id % locList.length]
       const sd   = new Date(base); sd.setDate(base.getDate() + sc)
       const ed   = new Date(base); ed.setDate(base.getDate() + ec)
-      rows.push({ id: randomUUID(), device_id: devId, task_id: task, assignee_id: asgn, start_date: sd.toISOString().slice(0, 10), end_date: ed.toISOString().slice(0, 10) })
+      rows.push({ id: randomUUID(), device_id: devId, task_id: task, assignee_id: asgn, location_id: loc, start_date: sd.toISOString().slice(0, 10), end_date: ed.toISOString().slice(0, 10) })
       dayOffset = ec + 1 + Math.floor(rand() * 5)
       if (dayOffset >= cols) break
     }

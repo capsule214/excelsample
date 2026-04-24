@@ -5,19 +5,22 @@ import { DatePicker } from "./DatePicker"
 
 export interface TaskInfo     { id: string; name: string; colorBg: string; colorFg: string }
 export interface AssigneeInfo { id: string; name: string }
+export interface LocationInfo { id: string; name: string }
 export interface DeviceInfo   {
   id: string; modelId: string; modelName: string
   serialNumber: string; requiredDeliveryDate: string | null
 }
 
 export interface DialogFormData {
-  deviceId:   string
-  taskId:     string
-  taskName:   string
-  startDate:  Date
-  endDate:    Date
-  assigneeId: string
+  deviceId:     string
+  taskId:       string
+  taskName:     string
+  startDate:    Date
+  endDate:      Date
+  assigneeId:   string
   assigneeName: string
+  locationId:   string
+  locationName: string
 }
 
 interface Props {
@@ -26,6 +29,7 @@ interface Props {
   devices:   DeviceInfo[]
   tasks:     TaskInfo[]
   assignees: AssigneeInfo[]
+  locations: LocationInfo[]
   minDate:   Date
   maxDate:   Date
   onSave:  (data: DialogFormData) => void
@@ -47,27 +51,31 @@ function fmtDate(d: Date) {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${h}:${m}`
 }
 
-export function ScheduleDialog({ mode, initial, devices, tasks, assignees, minDate, maxDate, onSave, onClose }: Props) {
-  const [deviceId,     setDeviceId    ] = useState(initial.deviceId)
-  const [taskId,       setTaskId      ] = useState(initial.taskId)
-  const [startDate,    setStartDate   ] = useState<Date>(initial.startDate)
-  const [endDate,      setEndDate     ] = useState<Date>(initial.endDate)
-  const [assigneeId,   setAssigneeId  ] = useState(initial.assigneeId)
-  const [error,        setError       ] = useState("")
-  const [activeField,  setActiveField ] = useState<"start" | "end">("start")
+export function ScheduleDialog({ mode, initial, devices, tasks, assignees, locations, minDate, maxDate, onSave, onClose }: Props) {
+  const [deviceId,   setDeviceId  ] = useState(initial.deviceId)
+  const [taskId,     setTaskId    ] = useState(initial.taskId)
+  const [startDate,  setStartDate ] = useState<Date>(initial.startDate)
+  const [endDate,    setEndDate   ] = useState<Date>(initial.endDate)
+  const [assigneeId, setAssigneeId] = useState(initial.assigneeId)
+  const [locationId, setLocationId] = useState(initial.locationId)
+  const [error,      setError     ] = useState("")
+  const [activeField, setActiveField] = useState<"start" | "end">("start")
 
   const handleSave = () => {
     if (startDate > endDate) { setError("終了日は開始日以降にしてください"); return }
-    const task    = tasks.find(t => t.id === taskId)
-    const asgn    = assignees.find(a => a.id === assigneeId)
+    const task = tasks.find(t => t.id === taskId)
+    const asgn = assignees.find(a => a.id === assigneeId)
+    const loc  = locations.find(l => l.id === locationId)
     onSave({
       deviceId,
       taskId,
-      taskName:    task?.name    ?? "",
+      taskName:    task?.name ?? "",
       startDate,
       endDate,
       assigneeId,
-      assigneeName: asgn?.name  ?? "",
+      assigneeName: asgn?.name ?? "",
+      locationId,
+      locationName: loc?.name ?? "",
     })
   }
 
@@ -122,7 +130,7 @@ export function ScheduleDialog({ mode, initial, devices, tasks, assignees, minDa
           </select>
         </div>
 
-        {/* タスク */}
+        {/* 工程 */}
         <div>
           <label className={label}>工程</label>
           <select className={sel} value={taskId} onChange={e => setTaskId(e.target.value)}>
@@ -190,6 +198,15 @@ export function ScheduleDialog({ mode, initial, devices, tasks, assignees, minDa
           <label className={label}>担当者</label>
           <select className={sel} value={assigneeId} onChange={e => setAssigneeId(e.target.value)}>
             {assignees.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+
+        {/* 場所 */}
+        <div>
+          <label className={label}>場所</label>
+          <select className={sel} value={locationId} onChange={e => setLocationId(e.target.value)}>
+            <option value="">─ 選択なし ─</option>
+            {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
         </div>
 

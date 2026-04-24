@@ -39,11 +39,18 @@ export const Task = sequelize.define("Task", {
   sort_order: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
 }, { tableName: "tasks", timestamps: false })
 
+export const Location = sequelize.define("Location", {
+  location_id: { type: DataTypes.TEXT, primaryKey: true },
+  name:        { type: DataTypes.TEXT, allowNull: false },
+  sort_order:  { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+}, { tableName: "locations", timestamps: false })
+
 export const Schedule = sequelize.define("Schedule", {
   id:          { type: DataTypes.TEXT, primaryKey: true },
   device_id:   { type: DataTypes.TEXT, allowNull: false },
   task_id:     { type: DataTypes.TEXT, allowNull: false },
   assignee_id: { type: DataTypes.TEXT, allowNull: false },
+  location_id: { type: DataTypes.TEXT, allowNull: true },
   start_date:  { type: DataTypes.TEXT, allowNull: false },
   end_date:    { type: DataTypes.TEXT, allowNull: false },
 }, { tableName: "schedules", timestamps: false })
@@ -59,13 +66,22 @@ Device.belongsTo(ModelMaster, { foreignKey: "model_id",    as: "model" })
 Schedule.belongsTo(Task,      { foreignKey: "task_id",     as: "task" })
 Schedule.belongsTo(Assignee,  { foreignKey: "assignee_id", as: "assignee" })
 Schedule.belongsTo(Device,    { foreignKey: "device_id",   as: "device" })
+Schedule.belongsTo(Location,  { foreignKey: "location_id", as: "location" })
 
-// ─── Seed ─────────────────────────────────────────────────────────────────────
+// ─── Seed helpers ─────────────────────────────────────────────────────────────
 
 function makeLCG(seed: number) {
   let s = seed >>> 0
   return () => { s = (Math.imul(1664525, s) + 1013904223) >>> 0; return s / 4294967296 }
 }
+
+export const LOCATION_LIST = [
+  { location_id: "l1", name: "A棟 ライン1", sort_order: 1 },
+  { location_id: "l2", name: "A棟 ライン2", sort_order: 2 },
+  { location_id: "l3", name: "B棟 ライン1", sort_order: 3 },
+  { location_id: "l4", name: "B棟 ライン2", sort_order: 4 },
+  { location_id: "l5", name: "C棟 組立室",  sort_order: 5 },
+]
 
 async function seedDb() {
   const models = [
@@ -107,6 +123,8 @@ async function seedDb() {
   ]
   await Task.bulkCreate(taskList)
 
+  await Location.bulkCreate(LOCATION_LIST)
+
   const base = new Date("2026-04-16"); base.setHours(0, 0, 0, 0)
   const cols = 120
   const rand = makeLCG(42)
@@ -122,6 +140,7 @@ async function seedDb() {
       const sc      = Math.min(dayOffset, cols - 2)
       const ec      = Math.min(sc + len,  cols - 1)
       const aIdx    = (++id) % assigneeList.length
+      const lIdx    = id % LOCATION_LIST.length
       const sd      = new Date(base); sd.setDate(base.getDate() + sc)
       const ed      = new Date(base); ed.setDate(base.getDate() + ec)
       schedules.push({
@@ -129,6 +148,7 @@ async function seedDb() {
         device_id:   `d${di}`,
         task_id:     taskList[taskIdx].task_id,
         assignee_id: assigneeList[aIdx].assignee_id,
+        location_id: LOCATION_LIST[lIdx].location_id,
         start_date:  sd.toISOString().slice(0, 10),
         end_date:    ed.toISOString().slice(0, 10),
       })
@@ -148,8 +168,29 @@ export async function initDb(): Promise<void> {
     await sequelize.query("PRAGMA journal_mode = WAL")
     await sequelize.query("PRAGMA foreign_keys = ON")
     await sequelize.sync()
+
+    // マイグレーション: locations テーブルが未作成の場合に作成
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS locations (
+        location_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      )
+    `)
+    // マイグレーション: location_id カラムが未追加の場合に追加
+    try {
+      await sequelize.query("ALTER TABLE schedules ADD COLUMN location_id TEXT")
+    } catch { /* already exists */ }
+
     const count = await ModelMaster.count()
     if (count === 0) await seedDb()
-  })()
+
+    // ロケーションが未シードの場合のみ追加
+    const locCount = await Location.count()
+    if (locCount === 0) await Location.bulkCreate(LOCATION_LIST)
+  })().catch(err => {
+    g._seqReady = undefined  // 失敗時はキャッシュをクリアして再試行可能にする
+    throw err
+  })
   return g._seqReady
 }

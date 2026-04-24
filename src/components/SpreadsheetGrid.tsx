@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { ContextMenu } from "./ContextMenu"
-import { ScheduleDialog, type DialogFormData, type DeviceInfo, type TaskInfo, type AssigneeInfo } from "./ScheduleDialog"
+import { ScheduleDialog, type DialogFormData, type DeviceInfo, type TaskInfo, type AssigneeInfo, type LocationInfo } from "./ScheduleDialog"
 import { BarTooltip, type TooltipBarInfo } from "./BarTooltip"
 import { DatePicker } from "./DatePicker"
 
@@ -133,6 +133,7 @@ interface BarDef {
   colorBg: string; colorFg: string
   startDate: Date; endDate: Date
   assigneeId: string; assignee: string
+  locationId: string; locationName: string
 }
 interface PlacedBar   extends BarDef { absoluteRow: number }
 interface RenderedBar extends PlacedBar { viewStartCol: number; viewEndCol: number }
@@ -143,7 +144,7 @@ type ContextMenuState =
   | { type: "cell"; x: number; y: number; row: number; col: number }
   | { type: "bar";  x: number; y: number; barId: string }
 type DialogState =
-  | { mode: "new";  deviceId: string; defaultAssigneeId?: string; startDate: Date; endDate: Date }
+  | { mode: "new";  deviceId: string; defaultAssigneeId?: string; defaultLocationId?: string; startDate: Date; endDate: Date }
   | { mode: "edit"; barId: string }
 interface TooltipState { barId: string; anchorX: number; anchorY: number }
 interface GroupDef { id: string; name: string }
@@ -153,6 +154,7 @@ type ApiBar = {
   id: string; deviceId: string; taskId: string; taskName: string
   colorBg: string; colorFg: string; startDate: string; endDate: string
   assigneeId: string; assigneeName: string
+  locationId: string; locationName: string
 }
 function parseApiDate(s: string): Date {
   // "YYYY-MM-DDTHH:MM:SS" → local time / "YYYY-MM-DD" → local midnight
@@ -166,12 +168,14 @@ function apiBarToBarDef(b: ApiBar): BarDef {
     startDate: parseApiDate(b.startDate),
     endDate:   parseApiDate(b.endDate),
     assigneeId: b.assigneeId, assignee: b.assigneeName,
+    locationId: b.locationId ?? "", locationName: b.locationName ?? "",
   }
 }
 
 /* ─── レイアウト計算 ─────────────────────────────────── */
 function computeLayout(
   bars: BarDef[], groups: GroupDef[], getGroupId: (b: BarDef) => string,
+  minRows = MIN_ROWS,
 ): { placedBars: PlacedBar[]; rowMetas: RowMeta[]; totalRows: number } {
   const placedBars: PlacedBar[] = []
   const rowMetas:   RowMeta[]   = []
@@ -187,7 +191,7 @@ function computeLayout(
       subRowEnds[sub] = bar.endDate.getTime()
       placedBars.push({ ...bar, absoluteRow: currentRow + sub })
     }
-    const rowCount = Math.max(MIN_ROWS, subRowEnds.length)
+    const rowCount = Math.max(minRows, subRowEnds.length)
     for (let i = 0; i < rowCount; i++)
       rowMetas.push({ groupId: group.id, groupIdx: gi, groupName: group.name,
         isFirst: i === 0, isLast: i === rowCount - 1 })
@@ -252,14 +256,15 @@ function SkeletonGrid({ ROW_HDR_W, tasks }: SkeletonProps) {
 
 /* ─── コンポーネント Props ───────────────────────────── */
 interface SpreadsheetGridProps {
-  mode:            "device" | "assignee"
-  devices:         DeviceInfo[]
-  assignees:       AssigneeInfo[]
-  tasks:           TaskInfo[]
+  mode:             "device" | "assignee" | "location"
+  devices:          DeviceInfo[]
+  assignees:        AssigneeInfo[]
+  tasks:            TaskInfo[]
+  locations:        LocationInfo[]
   visibleGroupIds?: string[]
 }
 
-export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visibleGroupIds }: SpreadsheetGridProps) {
+export default function SpreadsheetGrid({ mode, devices, assignees, tasks, locations, visibleGroupIds }: SpreadsheetGridProps) {
   const ROW_HDR_W = mode === "device" ? DEV_HDR_W : ASGN_HDR_W
 
   const [loading,      setLoading     ] = useState(true)
@@ -376,20 +381,24 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const groups = useMemo<GroupDef[]>(() => {
     const all: GroupDef[] = mode === "device"
       ? devices.map(d => ({ id: d.id, name: `${d.modelName} / ${d.serialNumber}` }))
-      : assignees.map(a => ({ id: a.id, name: a.name }))
+      : mode === "assignee"
+      ? assignees.map(a => ({ id: a.id, name: a.name }))
+      : locations.map(l => ({ id: l.id, name: l.name }))
     if (!visibleGroupIds) return all
     const vis = new Set(visibleGroupIds)
     return all.filter(g => vis.has(g.id))
-  }, [mode, devices, assignees, visibleGroupIds])
+  }, [mode, devices, assignees, locations, visibleGroupIds])
 
   const getGroupId = useCallback(
-    (bar: BarDef) => mode === "device" ? bar.deviceId : bar.assigneeId,
+    (bar: BarDef) => mode === "device" ? bar.deviceId : mode === "assignee" ? bar.assigneeId : bar.locationId,
     [mode]
   )
 
+  const minRowsForMode = mode === "location" ? 1 : MIN_ROWS
+
   const { placedBars, rowMetas, totalRows } = useMemo(
-    () => computeLayout(bars, groups, getGroupId),
-    [bars, groups, getGroupId]
+    () => computeLayout(bars, groups, getGroupId, minRowsForMode),
+    [bars, groups, getGroupId, minRowsForMode]
   )
 
   useEffect(() => {
@@ -603,6 +612,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const addBar = async (data: DialogFormData) => {
     const body = {
       deviceId: data.deviceId, taskId: data.taskId, assigneeId: data.assigneeId,
+      locationId: data.locationId,
       startDate: toIsoDateTime(data.startDate), endDate: toIsoDateTime(data.endDate),
     }
     const created: ApiBar = await fetch("/api/schedules", {
@@ -615,6 +625,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const editBar = async (barId: string, data: DialogFormData) => {
     const body = {
       deviceId: data.deviceId, taskId: data.taskId, assigneeId: data.assigneeId,
+      locationId: data.locationId,
       startDate: toIsoDateTime(data.startDate), endDate: toIsoDateTime(data.endDate),
     }
     const updated: ApiBar = await fetch(`/api/schedules/${barId}`, {
@@ -648,6 +659,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     const bodies = copiedBars.map(b => ({
       deviceId:   mode === "device"   ? (targetGroup ?? b.deviceId)   : b.deviceId,
       assigneeId: mode === "assignee" ? (targetGroup ?? b.assigneeId) : b.assigneeId,
+      locationId: mode === "location" ? (targetGroup ?? b.locationId) : b.locationId,
       taskId:     b.taskId,
       startDate: toIsoDateTime(new Date(b.startDate.getTime() + offsetMs)),
       endDate:   toIsoDateTime(new Date(b.endDate.getTime()   + offsetMs)),
@@ -667,11 +679,13 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     if (!dialog) return null
     if (dialog.mode === "new") {
       const firstTask = tasks[0] ?? { id: "", name: "" }
+      const assigneeId = dialog.defaultAssigneeId ?? assignees[0]?.id ?? ""
+      const locationId = dialog.defaultLocationId ?? ""
       return {
         deviceId: dialog.deviceId, taskId: firstTask.id, taskName: firstTask.name,
         startDate: dialog.startDate, endDate: dialog.endDate,
-        assigneeId: dialog.defaultAssigneeId ?? assignees[0]?.id ?? "",
-        assigneeName: assignees.find(a => a.id === (dialog.defaultAssigneeId ?? assignees[0]?.id))?.name ?? "",
+        assigneeId, assigneeName: assignees.find(a => a.id === assigneeId)?.name ?? "",
+        locationId, locationName: locations.find(l => l.id === locationId)?.name ?? "",
       }
     }
     const bar = bars.find(b => b.id === dialog.barId); if (!bar) return null
@@ -679,6 +693,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
       deviceId: bar.deviceId, taskId: bar.taskId, taskName: bar.process,
       startDate: bar.startDate, endDate: bar.endDate,
       assigneeId: bar.assigneeId, assigneeName: bar.assignee,
+      locationId: bar.locationId, locationName: bar.locationName,
     }
   }
 
@@ -850,7 +865,9 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
             {mode === "device"
               ? <><span style={{width:DEV_HDR_W1, fontSize:9, fontWeight:700, color:"#6b7280"}}>機種 / 製番</span>
                   <span style={{width:DEV_HDR_W2, fontSize:9, fontWeight:700, color:"#6b7280", borderLeft:"1px solid #d1d5db", paddingLeft:4}}>納期</span></>
-              : <span style={{fontSize:10, fontWeight:700, color:"#6b7280"}}>担当者</span>
+              : mode === "assignee"
+              ? <span style={{fontSize:10, fontWeight:700, color:"#6b7280"}}>担当者</span>
+              : <span style={{fontSize:10, fontWeight:700, color:"#6b7280"}}>場所</span>
             }
           </div>
 
@@ -1048,6 +1065,9 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
                   {meta.isFirst && mode === "assignee" && (
                     <span className="text-[10px] font-semibold text-gray-700 whitespace-nowrap pl-2">{meta.groupName}</span>
                   )}
+                  {meta.isFirst && mode === "location" && (
+                    <span className="text-[10px] font-semibold text-gray-700 whitespace-nowrap pl-2">{meta.groupName}</span>
+                  )}
                 </div>
 
                 {Array.from({ length: totalCols }, (_, col) => (
@@ -1127,7 +1147,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
 
       {/* ステータスバー */}
       <div className="shrink-0 px-3 py-0.5 bg-gray-100 border-t border-gray-300 text-[11px] text-gray-500 flex items-center gap-4">
-        <span>{groups.length} {mode === "device" ? "装置" : "担当者"} / {totalRows} 行 × {dates.length} 日{viewMode === "slot" ? ` (${totalCols} 列)` : ""} / 予定 {bars.length} 件</span>
+        <span>{groups.length} {mode === "device" ? "装置" : mode === "assignee" ? "担当者" : "場所"} / {totalRows} 行 × {dates.length} 日{viewMode === "slot" ? ` (${totalCols} 列)` : ""} / 予定 {bars.length} 件</span>
         {selectedBarIds.size > 0 && <span className="text-blue-600 font-semibold">{selectedBarIds.size} 件選択中</span>}
         {copiedBars.length > 0 && <span className="text-purple-600">📋 {copiedBars.length} 件コピー済み</span>}
         <span className="text-gray-400 ml-auto">右クリック: メニュー｜ドラッグ: 複数選択｜Shift/Ctrl: 追加選択</span>
@@ -1145,6 +1165,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
               mode: "new",
               deviceId:          mode === "device"   ? (meta?.groupId ?? devices[0]?.id ?? "")   : devices[0]?.id ?? "",
               defaultAssigneeId: mode === "assignee" ? (meta?.groupId ?? assignees[0]?.id ?? "") : undefined,
+              defaultLocationId: mode === "location" ? (meta?.groupId ?? locations[0]?.id ?? "") : undefined,
               startDate: colToDate(contextMenu.col),
               endDate:   colToEndDate(contextMenu.col),
             })
@@ -1166,7 +1187,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
       {dialog && init && (
         <ScheduleDialog
           mode={dialog.mode} initial={init}
-          devices={devices} tasks={tasks} assignees={assignees}
+          devices={devices} tasks={tasks} assignees={assignees} locations={locations}
           minDate={dates[0]} maxDate={dates[totalCols > 0 ? dates.length - 1 : 0]}
           onSave={data => dialog.mode === "new" ? addBar(data) : editBar(dialog.barId, data)}
           onClose={() => setDialog(null)}

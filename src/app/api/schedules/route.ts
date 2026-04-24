@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { Op } from "sequelize"
-import { initDb, Schedule, Task, Assignee } from "@/lib/sequelize"
+import { initDb, Schedule, Task, Assignee, Location } from "@/lib/sequelize"
 import { randomUUID } from "crypto"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -16,12 +16,15 @@ function toRow(r: any) {
     endDate:      r.end_date,
     assigneeId:   r.assignee_id,
     assigneeName: r.assignee?.name,
+    locationId:   r.location_id   ?? "",
+    locationName: r.location?.name ?? "",
   }
 }
 
 const INCLUDE = [
   { model: Task,     as: "task",     attributes: ["task_name", "color_bg", "color_fg"] },
   { model: Assignee, as: "assignee", attributes: ["name"] },
+  { model: Location, as: "location", attributes: ["name"], required: false },
 ]
 
 export async function GET(req: NextRequest) {
@@ -30,7 +33,6 @@ export async function GET(req: NextRequest) {
   const from = searchParams.get("from")
   const to   = searchParams.get("to")
 
-  // 期間指定がある場合は重複する予定のみ取得 (start_date <= to AND end_date >= from)
   const where = from && to
     ? { start_date: { [Op.lte]: to }, end_date: { [Op.gte]: from } }
     : {}
@@ -43,7 +45,15 @@ export async function POST(req: NextRequest) {
   await initDb()
   const body = await req.json()
   const id   = randomUUID()
-  await Schedule.create({ id, device_id: body.deviceId, task_id: body.taskId, assignee_id: body.assigneeId, start_date: body.startDate, end_date: body.endDate })
+  await Schedule.create({
+    id,
+    device_id:   body.deviceId,
+    task_id:     body.taskId,
+    assignee_id: body.assigneeId,
+    location_id: body.locationId || null,
+    start_date:  body.startDate,
+    end_date:    body.endDate,
+  })
   const inserted = await Schedule.findOne({ where: { id }, include: INCLUDE })
   return NextResponse.json(toRow(inserted!.toJSON()), { status: 201 })
 }

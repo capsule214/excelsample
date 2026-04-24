@@ -3,11 +3,11 @@
 import dynamic from "next/dynamic"
 import { useState, useEffect } from "react"
 import { DisplaySettingsDialog } from "./DisplaySettingsDialog"
-import type { DeviceInfo, AssigneeInfo, TaskInfo } from "./ScheduleDialog"
+import type { DeviceInfo, AssigneeInfo, TaskInfo, LocationInfo } from "./ScheduleDialog"
 
 const SpreadsheetGrid = dynamic(() => import("@/components/SpreadsheetGrid"), { ssr: false })
 
-type Tab = "device" | "assignee"
+type Tab = "device" | "assignee" | "location"
 
 interface DisplaySettings { deviceIds: string[]; assigneeIds: string[] }
 
@@ -67,23 +67,35 @@ export default function SpreadsheetGridClient() {
   const [devices,        setDevices       ] = useState<DeviceInfo[]>([])
   const [assignees,      setAssignees     ] = useState<AssigneeInfo[]>([])
   const [tasks,          setTasks         ] = useState<TaskInfo[]>([])
+  const [locations,      setLocations     ] = useState<LocationInfo[]>([])
   const [displaySettings,setDisplaySettings] = useState<DisplaySettings | null>(null)
   const [showDialog,     setShowDialog    ] = useState(false)
   const [loading,        setLoading       ] = useState(true)
 
   useEffect(() => {
+    const safeJson = async (url: string) => {
+      const r = await fetch(url)
+      const text = await r.text()
+      if (!text) throw new Error(`${url} returned empty response (status ${r.status})`)
+      let parsed: unknown
+      try { parsed = JSON.parse(text) } catch { throw new Error(`${url} returned non-JSON: ${text.slice(0, 200)}`) }
+      if (!r.ok) throw new Error(`${url} failed (${r.status}): ${JSON.stringify(parsed)}`)
+      return parsed
+    }
     Promise.all([
-      fetch("/api/devices").then(r => r.json()),
-      fetch("/api/assignees").then(r => r.json()),
-      fetch("/api/tasks").then(r => r.json()),
-      fetch("/api/display-settings").then(r => r.json()),
-    ]).then(([devs, asgns, tsks, settings]: [DeviceInfo[], AssigneeInfo[], TaskInfo[], DisplaySettings]) => {
+      safeJson("/api/devices"),
+      safeJson("/api/assignees"),
+      safeJson("/api/tasks"),
+      safeJson("/api/display-settings"),
+      safeJson("/api/locations"),
+    ]).then(([devs, asgns, tsks, settings, locs]: [DeviceInfo[], AssigneeInfo[], TaskInfo[], DisplaySettings, LocationInfo[]]) => {
       setDevices(devs)
       setAssignees(asgns)
       setTasks(tsks)
       setDisplaySettings(settings)
+      setLocations(locs)
       setLoading(false)
-    })
+    }).catch(err => console.error("Initial fetch failed:", err))
   }, [])
 
   const handleSaveSettings = async (deviceIds: string[], assigneeIds: string[]) => {
@@ -102,7 +114,7 @@ export default function SpreadsheetGridClient() {
       {/* ━━━ ナビバー ━━━ */}
       <div className="shrink-0 flex items-center border-b border-gray-300 bg-gray-50 pr-2">
         {/* タブ */}
-        {(["device", "assignee"] as Tab[]).map(t => (
+        {(["device", "assignee", "location"] as Tab[]).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -113,7 +125,7 @@ export default function SpreadsheetGridClient() {
                 : "text-gray-500 hover:bg-gray-100",
             ].join(" ")}
           >
-            {t === "device" ? "装置" : "担当者"}
+            {t === "device" ? "装置" : t === "assignee" ? "担当者" : "場所"}
           </button>
         ))}
 
@@ -143,15 +155,21 @@ export default function SpreadsheetGridClient() {
           <div className={`flex-1 overflow-hidden ${tab === "device" ? "flex" : "hidden"} flex-col`}>
             <SpreadsheetGrid
               mode="device"
-              devices={devices} assignees={assignees} tasks={tasks}
+              devices={devices} assignees={assignees} tasks={tasks} locations={locations}
               visibleGroupIds={displaySettings?.deviceIds}
             />
           </div>
           <div className={`flex-1 overflow-hidden ${tab === "assignee" ? "flex" : "hidden"} flex-col`}>
             <SpreadsheetGrid
               mode="assignee"
-              devices={devices} assignees={assignees} tasks={tasks}
+              devices={devices} assignees={assignees} tasks={tasks} locations={locations}
               visibleGroupIds={displaySettings?.assigneeIds}
+            />
+          </div>
+          <div className={`flex-1 overflow-hidden ${tab === "location" ? "flex" : "hidden"} flex-col`}>
+            <SpreadsheetGrid
+              mode="location"
+              devices={devices} assignees={assignees} tasks={tasks} locations={locations}
             />
           </div>
         </>
