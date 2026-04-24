@@ -4,6 +4,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { ContextMenu } from "./ContextMenu"
 import { ScheduleDialog, type DialogFormData, type DeviceInfo, type TaskInfo, type AssigneeInfo } from "./ScheduleDialog"
 import { BarTooltip, type TooltipBarInfo } from "./BarTooltip"
+import { DatePicker } from "./DatePicker"
 
 /* ─── 固定定数 ──────────────────────────────────────── */
 const CELL_SIZE   = 20
@@ -361,6 +362,10 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   const [dialog,         setDialog        ] = useState<DialogState | null>(null)
   const [tooltip,        setTooltip       ] = useState<TooltipState | null>(null)
   const [visibleRows,    setVisibleRows   ] = useState({ start: 0, end: 79 })
+  const [showCalendar,   setShowCalendar  ] = useState(false)
+  const [calendarPos,    setCalendarPos   ] = useState({ top: 0, left: 0 })
+  const calendarTriggerRef = useRef<HTMLButtonElement>(null)
+  const calendarRef        = useRef<HTMLDivElement>(null)
 
   const taskColorMap = useMemo(() => {
     const m: Record<string, { bg: string; fg: string }> = {}
@@ -401,6 +406,30 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     const end   = Math.min(totalRows - 1, Math.ceil((scrolledPast + clientHeight) / CELL_SIZE) + BUFFER_ROWS)
     setVisibleRows({ start, end })
   }, [totalRows, loading, dataTop])
+
+  /* ── カレンダーポップアップ ── */
+  const openCalendar = () => {
+    const rect = calendarTriggerRef.current?.getBoundingClientRect()
+    if (rect) setCalendarPos({ top: rect.bottom + 4, left: rect.left })
+    setShowCalendar(v => !v)
+  }
+  const handleCalendarSelect = (date: Date) => {
+    date.setHours(0, 0, 0, 0)
+    setAppliedStartDate(date)
+    setInputStartDate(toInputStr(date))
+    setShowCalendar(false)
+  }
+  useEffect(() => {
+    if (!showCalendar) return
+    const handler = (e: MouseEvent) => {
+      if (
+        calendarRef.current    && !calendarRef.current.contains(e.target as Node) &&
+        calendarTriggerRef.current && !calendarTriggerRef.current.contains(e.target as Node)
+      ) setShowCalendar(false)
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [showCalendar])
 
   /* ── 期間データ取得 ── */
   const ensureFetched = useCallback(async (from: string, to: string) => {
@@ -732,11 +761,19 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
               {n === -2 ? "≪ 2M" : "‹ 1M"}
             </button>
           ))}
-          <input type="date" value={inputStartDate}
-            onChange={e => setInputStartDate(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleApply()}
-            className="px-1.5 py-0.5 text-xs border border-gray-300 rounded bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
-          />
+          <button
+            ref={calendarTriggerRef}
+            type="button"
+            onClick={openCalendar}
+            className={[
+              "px-2 py-0.5 text-xs border rounded font-medium transition-colors",
+              showCalendar
+                ? "border-blue-400 bg-blue-50 text-blue-700 ring-1 ring-blue-400"
+                : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50",
+            ].join(" ")}
+          >
+            📅 {inputStartDate}
+          </button>
           {([1,2] as const).map(n => (
             <button key={n} onClick={() => shiftStartDate(n)}
               className="px-2 py-0.5 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50 text-gray-600 font-medium">
@@ -1140,6 +1177,17 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
       {tooltip && tipInfo && (
         <BarTooltip bar={tipInfo} anchorX={tooltip.anchorX} anchorY={tooltip.anchorY}
           onClose={() => setTooltip(null)} />
+      )}
+
+      {/* カレンダーポップアップ */}
+      {showCalendar && (
+        <div
+          ref={calendarRef}
+          style={{ position: "fixed", top: calendarPos.top, left: calendarPos.left, zIndex: 3000 }}
+          className="bg-white border border-gray-200 rounded-xl shadow-2xl p-3 w-64"
+        >
+          <DatePicker value={appliedStartDate} onChange={handleCalendarSelect} />
+        </div>
       )}
     </div>
   )
