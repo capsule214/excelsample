@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react"
 
 export interface TooltipBarInfo {
+  id: string
   process: string
   colorBg: string
   deviceName: string
@@ -104,6 +105,8 @@ export function BarTooltip({ bar, anchorX, anchorY, onClose }: Props) {
           <Row label="開始日" value={bar.startDate.toLocaleDateString("ja-JP")} />
           <Row label="終了日" value={bar.endDate.toLocaleDateString("ja-JP")}   />
           <Row label="期間"   value={`${bar.days} 日間`} />
+          <div className="border-t border-gray-100 my-0.5" />
+          <Row label="ID"     value={bar.id} />
         </div>
       </div>
 

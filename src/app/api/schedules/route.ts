@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { Op } from "sequelize"
 import { initDb, Schedule, Task, Assignee } from "@/lib/sequelize"
 import { randomUUID } from "crypto"
 
@@ -23,9 +24,18 @@ const INCLUDE = [
   { model: Assignee, as: "assignee", attributes: ["name"] },
 ]
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   await initDb()
-  const rows = await Schedule.findAll({ include: INCLUDE, order: [["start_date", "ASC"]] })
+  const { searchParams } = new URL(req.url)
+  const from = searchParams.get("from")
+  const to   = searchParams.get("to")
+
+  // 期間指定がある場合は重複する予定のみ取得 (start_date <= to AND end_date >= from)
+  const where = from && to
+    ? { start_date: { [Op.lte]: to }, end_date: { [Op.gte]: from } }
+    : {}
+
+  const rows = await Schedule.findAll({ include: INCLUDE, where, order: [["start_date", "ASC"]] })
   return NextResponse.json(rows.map(r => toRow(r.toJSON())))
 }
 

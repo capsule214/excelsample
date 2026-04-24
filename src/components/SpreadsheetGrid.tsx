@@ -63,6 +63,45 @@ function generateDates(months: number, startDate: Date): Date[] {
   })
 }
 function toIso(d: Date) { return d.toISOString().slice(0, 10) }
+
+/* ─── 取得済み範囲キャッシュ ─────────────────────────── */
+type FetchRange = { from: string; to: string }
+
+function shiftDay(iso: string, delta: number): string {
+  const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + delta); return toIso(d)
+}
+
+/** [from, to] のうち covered に含まれない区間を返す */
+function computeGaps(from: string, to: string, covered: FetchRange[]): FetchRange[] {
+  const sorted = covered
+    .filter(r => r.to >= from && r.from <= to)
+    .sort((a, b) => (a.from < b.from ? -1 : 1))
+  const gaps: FetchRange[] = []
+  let pos = from
+  for (const r of sorted) {
+    if (r.from > pos) gaps.push({ from: pos, to: r.from <= to ? shiftDay(r.from, -1) : to })
+    if (r.to >= pos)  pos = shiftDay(r.to, 1)
+    if (pos > to) break
+  }
+  if (pos <= to) gaps.push({ from: pos, to })
+  return gaps.filter(g => g.from <= g.to)
+}
+
+/** covered に add を追加してマージ済みリストを返す */
+function absorbRange(covered: FetchRange[], add: FetchRange): FetchRange[] {
+  const all = [...covered, add].sort((a, b) => (a.from < b.from ? -1 : 1))
+  const merged: FetchRange[] = []
+  for (const r of all) {
+    const last = merged[merged.length - 1]
+    if (last && r.from <= shiftDay(last.to, 1)) {
+      if (r.to > last.to) last.to = r.to
+    } else {
+      merged.push({ ...r })
+    }
+  }
+  return merged
+}
+
 /**
  * その日が属する「日曜〜土曜」の週を確定し、
  * 週の土曜日が翌月なら翌月の第1週として返す。
@@ -222,17 +261,11 @@ interface SpreadsheetGridProps {
 export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visibleGroupIds }: SpreadsheetGridProps) {
   const ROW_HDR_W = mode === "device" ? DEV_HDR_W : ASGN_HDR_W
 
-  const [loading,   setLoading  ] = useState(true)
-  const [bars,      setBars     ] = useState<BarDef[]>([])
-  const [seeding,   setSeeding  ] = useState(false)
-  const [viewMode,  setViewMode ] = useState<"day" | "slot">("day")
-
-  useEffect(() => {
-    fetch("/api/schedules").then(r => r.json()).then((scheds: ApiBar[]) => {
-      setBars(scheds.map(apiBarToBarDef))
-      setLoading(false)
-    })
-  }, [])
+  const [loading,      setLoading     ] = useState(true)
+  const [bars,         setBars        ] = useState<BarDef[]>([])
+  const [seeding,      setSeeding     ] = useState(false)
+  const [viewMode,     setViewMode    ] = useState<"day" | "slot">("day")
+  const [cacheVersion, setCacheVersion] = useState(0)
 
   /* ── ツールバー入力値 ── */
   const [inputMonths,    setInputMonths   ] = useState(DEFAULT_MONTHS)
@@ -310,12 +343,16 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
   }, [dates, viewMode])
 
   /* ── DOM refs ── */
-  const containerRef    = useRef<HTMLDivElement>(null)
-  const selCellRef      = useRef<HTMLDivElement>(null)
-  const dragRectRef     = useRef<HTMLDivElement>(null)
-  const dragSelRef      = useRef<DragSel | null>(null)
-  const selectedCellRef = useRef<{ row: number; col: number } | null>(null)
-  const rectCacheRef    = useRef<DOMRect | null>(null)
+  const containerRef        = useRef<HTMLDivElement>(null)
+  const selCellRef          = useRef<HTMLDivElement>(null)
+  const dragRectRef         = useRef<HTMLDivElement>(null)
+  const dragSelRef          = useRef<DragSel | null>(null)
+  const selectedCellRef     = useRef<{ row: number; col: number } | null>(null)
+  const rectCacheRef        = useRef<DOMRect | null>(null)
+  /* ── フェッチキャッシュ refs ── */
+  const fetchedRangesRef    = useRef<FetchRange[]>([])
+  const seedingRef          = useRef(false)
+  const initialFetchDoneRef = useRef(false)
 
   /* ── React state ── */
   const [selectedBarIds, setSelectedBarIds] = useState<Set<string>>(new Set())
@@ -365,26 +402,69 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     setVisibleRows({ start, end })
   }, [totalRows, loading, dataTop])
 
+  /* ── 期間データ取得 ── */
+  const ensureFetched = useCallback(async (from: string, to: string) => {
+    if (seedingRef.current) return
+    const gaps = computeGaps(from, to, fetchedRangesRef.current)
+    if (gaps.length === 0) return
+
+    const results = await Promise.all(
+      gaps.map(g =>
+        fetch(`/api/schedules?from=${g.from}&to=${g.to}`)
+          .then(r => r.json() as Promise<ApiBar[]>)
+          .then(scheds => ({ newBars: scheds.map(apiBarToBarDef), g }))
+      )
+    )
+
+    const allNew = results.flatMap(r => r.newBars)
+    setBars(prev => {
+      const existing = new Set(prev.map(b => b.id))
+      const toAdd = allNew.filter(b => !existing.has(b.id))
+      return toAdd.length > 0 ? [...prev, ...toAdd] : prev
+    })
+    for (const { g } of results) {
+      fetchedRangesRef.current = absorbRange(fetchedRangesRef.current, g)
+    }
+    if (!initialFetchDoneRef.current) {
+      initialFetchDoneRef.current = true
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const end = addMonths(appliedStartDate, appliedMonths)
+    end.setDate(end.getDate() - 1)
+    ensureFetched(toIso(appliedStartDate), toIso(end))
+  }, [appliedStartDate, appliedMonths, cacheVersion, ensureFetched])
+
   /* ── 適用ボタン ── */
   const handleApply = async () => {
     const months = Math.max(1, Math.min(24, inputMonths))
     const count  = Math.max(0, Math.min(5000, inputCount))
-    setInputMonths(months); setInputCount(count); setAppliedMonths(months)
+    setInputMonths(months); setInputCount(count)
 
     let startDate = appliedStartDate
     try {
       const parsed = fromInputStr(inputStartDate)
-      if (!isNaN(parsed.getTime())) { parsed.setHours(0,0,0,0); startDate = parsed; setAppliedStartDate(parsed) }
+      if (!isNaN(parsed.getTime())) { parsed.setHours(0,0,0,0); startDate = parsed }
     } catch { /* ignore */ }
 
+    seedingRef.current = true
     setSeeding(true)
     await fetch("/api/seed", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ count, baseDate: toIso(startDate), months }),
     })
-    const scheds: ApiBar[] = await fetch("/api/schedules").then(r => r.json())
-    setBars(scheds.map(apiBarToBarDef))
+
+    // シード完了後にキャッシュをクリアして新範囲を再取得
+    fetchedRangesRef.current = []
+    setBars([])
     setSelectedBarIds(new Set()); setCopiedBars([])
+    setAppliedMonths(months)
+    setAppliedStartDate(startDate)
+    setInputStartDate(toInputStr(startDate))
+    seedingRef.current = false
+    setCacheVersion(v => v + 1)
     setSeeding(false)
   }
 
@@ -579,6 +659,7 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
     const dev = devices.find(d => d.id === bar?.deviceId)
     if (!bar || !dev) return null
     return {
+      id:         bar.id,
       process:    bar.process,
       colorBg:    bar.colorBg,
       deviceName: `${dev.modelName} / ${dev.serialNumber}`,
@@ -985,10 +1066,6 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, visib
                   if (!selectedBarIds.has(bar.id)) setSelectedBarIds(new Set([bar.id]))
                   setContextMenu({ type: "bar", x: e.clientX, y: e.clientY, barId: bar.id })
                 }}
-                onMouseEnter={e => {
-                  if (!contextMenu) setTooltip({ barId: bar.id, anchorX: e.clientX, anchorY: e.clientY })
-                }}
-                onMouseLeave={() => setTooltip(null)}
               >
                 <span style={{ fontSize: 9, fontWeight: 700, whiteSpace: "nowrap", letterSpacing: "0.02em" }}>
                   {bar.process}
