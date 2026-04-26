@@ -55,6 +55,14 @@ export const Schedule = sequelize.define("Schedule", {
   end_date:    { type: DataTypes.TEXT, allowNull: false },
 }, { tableName: "schedules", timestamps: false })
 
+export const LocationSchedule = sequelize.define("LocationSchedule", {
+  id:          { type: DataTypes.TEXT, primaryKey: true },
+  location_id: { type: DataTypes.TEXT, allowNull: false },
+  device_id:   { type: DataTypes.TEXT, allowNull: false },
+  start_date:  { type: DataTypes.TEXT, allowNull: false },
+  end_date:    { type: DataTypes.TEXT, allowNull: false },
+}, { tableName: "location_schedules", timestamps: false })
+
 export const DisplaySetting = sequelize.define("DisplaySetting", {
   setting_key: { type: DataTypes.TEXT, primaryKey: true },
   value:       { type: DataTypes.TEXT, allowNull: false, defaultValue: "[]" },
@@ -67,6 +75,8 @@ Schedule.belongsTo(Task,      { foreignKey: "task_id",     as: "task" })
 Schedule.belongsTo(Assignee,  { foreignKey: "assignee_id", as: "assignee" })
 Schedule.belongsTo(Device,    { foreignKey: "device_id",   as: "device" })
 Schedule.belongsTo(Location,  { foreignKey: "location_id", as: "location" })
+LocationSchedule.belongsTo(Location, { foreignKey: "location_id", as: "location" })
+LocationSchedule.belongsTo(Device,   { foreignKey: "device_id",   as: "device" })
 
 // ─── Seed helpers ─────────────────────────────────────────────────────────────
 
@@ -181,6 +191,17 @@ export async function initDb(): Promise<void> {
     try {
       await sequelize.query("ALTER TABLE schedules ADD COLUMN location_id TEXT")
     } catch { /* already exists */ }
+
+    // マイグレーション: location_schedules テーブル作成
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS location_schedules (
+        id          TEXT PRIMARY KEY,
+        location_id TEXT NOT NULL REFERENCES locations(location_id),
+        device_id   TEXT NOT NULL REFERENCES devices(device_id),
+        start_date  TEXT NOT NULL,
+        end_date    TEXT NOT NULL
+      )
+    `)
 
     const count = await ModelMaster.count()
     if (count === 0) await seedDb()

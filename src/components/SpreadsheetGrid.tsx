@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { ContextMenu } from "./ContextMenu"
 import { ScheduleDialog, type DialogFormData, type DeviceInfo, type TaskInfo, type AssigneeInfo, type LocationInfo } from "./ScheduleDialog"
+import { LocationScheduleDialog, type LocationScheduleFormData } from "./LocationScheduleDialog"
 import { BarTooltip, type TooltipBarInfo } from "./BarTooltip"
 import { DatePicker } from "./DatePicker"
 
@@ -135,9 +136,19 @@ interface BarDef {
   assigneeId: string; assignee: string
   locationId: string; locationName: string
 }
+
+interface LocationBarDef {
+  id:           string
+  locationId:   string
+  locationName: string
+  deviceId:     string
+  serialNumber: string
+  startDate:    Date
+  endDate:      Date
+}
 interface PlacedBar   extends BarDef { absoluteRow: number }
 interface RenderedBar extends PlacedBar { viewStartCol: number; viewEndCol: number }
-interface RowMeta { groupId: string; groupIdx: number; groupName: string; isFirst: boolean; isLast: boolean }
+interface RowMeta { groupId: string; groupIdx: number; groupName: string; isFirst: boolean; isLast: boolean; isLocationRow: boolean }
 interface DragSel { startRow: number; startCol: number; curRow: number; curCol: number; active: boolean }
 
 type ContextMenuState =
@@ -156,6 +167,11 @@ type ApiBar = {
   assigneeId: string; assigneeName: string
   locationId: string; locationName: string
 }
+type ApiLocationBar = {
+  id: string; locationId: string; locationName: string
+  deviceId: string; serialNumber: string
+  startDate: string; endDate: string
+}
 function parseApiDate(s: string): Date {
   // "YYYY-MM-DDTHH:MM:SS" → local time / "YYYY-MM-DD" → local midnight
   return s.includes("T") ? new Date(s) : new Date(s + "T00:00:00")
@@ -171,15 +187,35 @@ function apiBarToBarDef(b: ApiBar): BarDef {
     locationId: b.locationId ?? "", locationName: b.locationName ?? "",
   }
 }
+function apiLocationBarToLocationBarDef(b: ApiLocationBar): LocationBarDef {
+  return {
+    id: b.id, locationId: b.locationId, locationName: b.locationName,
+    deviceId: b.deviceId, serialNumber: b.serialNumber,
+    startDate: parseApiDate(b.startDate),
+    endDate:   parseApiDate(b.endDate),
+  }
+}
+function locationBarToBarDef(lb: LocationBarDef): BarDef {
+  return {
+    id: lb.id, deviceId: lb.deviceId,
+    taskId: "", process: lb.locationName,
+    colorBg: "#22c55e", colorFg: "#fff",
+    startDate: lb.startDate, endDate: lb.endDate,
+    assigneeId: "", assignee: "",
+    locationId: lb.locationId, locationName: lb.locationName,
+  }
+}
 
 /* ─── レイアウト計算 ─────────────────────────────────── */
 function computeLayout(
   bars: BarDef[], groups: GroupDef[], getGroupId: (b: BarDef) => string,
   minRows = MIN_ROWS,
+  locationBars?: BarDef[],
 ): { placedBars: PlacedBar[]; rowMetas: RowMeta[]; totalRows: number } {
   const placedBars: PlacedBar[] = []
   const rowMetas:   RowMeta[]   = []
   let currentRow = 0
+  const hasLocRow = locationBars !== undefined
   for (const [gi, group] of groups.entries()) {
     const gBars = bars
       .filter(b => getGroupId(b) === group.id)
@@ -191,11 +227,20 @@ function computeLayout(
       subRowEnds[sub] = bar.endDate.getTime()
       placedBars.push({ ...bar, absoluteRow: currentRow + sub })
     }
-    const rowCount = Math.max(minRows, subRowEnds.length)
-    for (let i = 0; i < rowCount; i++)
+    const regularRowCount = Math.max(minRows, subRowEnds.length)
+    for (let i = 0; i < regularRowCount; i++)
       rowMetas.push({ groupId: group.id, groupIdx: gi, groupName: group.name,
-        isFirst: i === 0, isLast: i === rowCount - 1 })
-    currentRow += rowCount
+        isFirst: i === 0, isLast: !hasLocRow && i === regularRowCount - 1, isLocationRow: false })
+    if (hasLocRow) {
+      const locRow = currentRow + regularRowCount
+      for (const bar of locationBars.filter(b => getGroupId(b) === group.id))
+        placedBars.push({ ...bar, absoluteRow: locRow })
+      rowMetas.push({ groupId: group.id, groupIdx: gi, groupName: group.name,
+        isFirst: false, isLast: true, isLocationRow: true })
+      currentRow += regularRowCount + 1
+    } else {
+      currentRow += regularRowCount
+    }
   }
   return { placedBars, rowMetas, totalRows: currentRow }
 }
@@ -270,6 +315,7 @@ interface SpreadsheetGridProps {
   tasks:            TaskInfo[]
   locations:        LocationInfo[]
   visibleGroupIds?: string[]
+  showLocationRow?: boolean
   scrollToTarget?:  JumpTarget | null
   onJumpToOtherTab?:     (target: JumpTarget) => void
   onScrollToTargetDone?: () => void
@@ -277,6 +323,7 @@ interface SpreadsheetGridProps {
 
 export default function SpreadsheetGrid({
   mode, devices, assignees, tasks, locations, visibleGroupIds,
+  showLocationRow,
   scrollToTarget, onJumpToOtherTab, onScrollToTargetDone,
 }: SpreadsheetGridProps) {
   const ROW_HDR_W = mode === "device" ? DEV_HDR_W : ASGN_HDR_W
@@ -375,10 +422,17 @@ export default function SpreadsheetGrid({
   const initialFetchDoneRef = useRef(false)
 
   /* ── React state ── */
-  const [selectedBarIds, setSelectedBarIds] = useState<Set<string>>(new Set())
-  const [copiedBars,     setCopiedBars    ] = useState<BarDef[]>([])
-  const [contextMenu,    setContextMenu   ] = useState<ContextMenuState | null>(null)
-  const [dialog,         setDialog        ] = useState<DialogState | null>(null)
+  const [selectedBarIds,  setSelectedBarIds ] = useState<Set<string>>(new Set())
+  const [copiedBars,      setCopiedBars     ] = useState<BarDef[]>([])
+  const [contextMenu,     setContextMenu    ] = useState<ContextMenuState | null>(null)
+  const [dialog,          setDialog         ] = useState<DialogState | null>(null)
+  const [locationDialog,  setLocationDialog ] = useState<
+    | { mode: "new";  deviceId: string; startDate: Date; endDate: Date }
+    | { mode: "edit"; barId: string }
+    | null
+  >(null)
+  const [locationBars,    setLocationBars   ] = useState<LocationBarDef[]>([])
+  const locationFetchRangesRef = useRef<FetchRange[]>([])
   const [tooltip,        setTooltip       ] = useState<TooltipState | null>(null)
   const [visibleRows,    setVisibleRows   ] = useState({ start: 0, end: 79 })
   const [showCalendar,   setShowCalendar  ] = useState(false)
@@ -410,9 +464,14 @@ export default function SpreadsheetGrid({
 
   const minRowsForMode = mode === "location" ? 1 : MIN_ROWS
 
+  const locationBarsForLayout = useMemo(
+    () => mode === "device" && showLocationRow ? locationBars.map(locationBarToBarDef) : undefined,
+    [locationBars, mode, showLocationRow]
+  )
+
   const { placedBars, rowMetas, totalRows } = useMemo(
-    () => computeLayout(bars, groups, getGroupId, minRowsForMode),
-    [bars, groups, getGroupId, minRowsForMode]
+    () => computeLayout(bars, groups, getGroupId, minRowsForMode, locationBarsForLayout),
+    [bars, groups, getGroupId, minRowsForMode, locationBarsForLayout]
   )
 
   useEffect(() => {
@@ -536,6 +595,35 @@ export default function SpreadsheetGrid({
     end.setDate(end.getDate() - 1)
     ensureFetched(toIso(appliedStartDate), toIso(end))
   }, [appliedStartDate, appliedMonths, cacheVersion, ensureFetched])
+
+  /* ── 場所使用予定フェッチ ── */
+  const ensureFetchedLocationBars = useCallback(async (from: string, to: string) => {
+    if (mode !== "device" || !showLocationRow) return
+    const gaps = computeGaps(from, to, locationFetchRangesRef.current)
+    if (gaps.length === 0) return
+    const results = await Promise.all(
+      gaps.map(g =>
+        fetch(`/api/location-schedules?from=${g.from}&to=${g.to}`)
+          .then(r => r.json() as Promise<ApiLocationBar[]>)
+          .then(items => ({ newBars: items.map(apiLocationBarToLocationBarDef), g }))
+      )
+    )
+    const allNew = results.flatMap(r => r.newBars)
+    setLocationBars(prev => {
+      const existing = new Set(prev.map(b => b.id))
+      const toAdd = allNew.filter(b => !existing.has(b.id))
+      return toAdd.length > 0 ? [...prev, ...toAdd] : prev
+    })
+    for (const { g } of results) {
+      locationFetchRangesRef.current = absorbRange(locationFetchRangesRef.current, g)
+    }
+  }, [mode, showLocationRow])
+
+  useEffect(() => {
+    const end = addMonths(appliedStartDate, appliedMonths)
+    end.setDate(end.getDate() - 1)
+    ensureFetchedLocationBars(toIso(appliedStartDate), toIso(end))
+  }, [appliedStartDate, appliedMonths, cacheVersion, showLocationRow, ensureFetchedLocationBars])
 
   /* ── 適用ボタン ── */
   const handleApply = async () => {
@@ -705,11 +793,50 @@ export default function SpreadsheetGrid({
 
   const deleteSelected = async () => {
     const ids = [...selectedBarIds]
-    await fetch("/api/schedules", {
-      method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }),
-    })
+    const locIds = ids.filter(id => locationBars.some(b => b.id === id))
+    const regIds = ids.filter(id => !locIds.includes(id))
+    await Promise.all([
+      regIds.length > 0
+        ? fetch("/api/schedules", {
+            method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: regIds }),
+          })
+        : Promise.resolve(),
+      ...locIds.map(id => fetch(`/api/location-schedules/${id}`, { method: "DELETE" })),
+    ])
     setBars(prev => prev.filter(b => !selectedBarIds.has(b.id)))
+    setLocationBars(prev => prev.filter(b => !selectedBarIds.has(b.id)))
     setSelectedBarIds(new Set())
+  }
+
+  /* ── 場所使用予定 CRUD ── */
+  const addLocationBar = async (data: LocationScheduleFormData) => {
+    const body = {
+      locationId: data.locationId, deviceId: data.deviceId,
+      startDate: toIsoDateTime(data.startDate), endDate: toIsoDateTime(data.endDate),
+    }
+    const created: ApiLocationBar = await fetch("/api/location-schedules", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }).then(r => r.json())
+    setLocationBars(prev => [...prev, apiLocationBarToLocationBarDef(created)])
+    setLocationDialog(null)
+  }
+
+  const editLocationBar = async (barId: string, data: LocationScheduleFormData) => {
+    const body = {
+      locationId: data.locationId, deviceId: data.deviceId,
+      startDate: toIsoDateTime(data.startDate), endDate: toIsoDateTime(data.endDate),
+    }
+    const updated: ApiLocationBar = await fetch(`/api/location-schedules/${barId}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }).then(r => r.json())
+    setLocationBars(prev => prev.map(b => b.id === barId ? apiLocationBarToLocationBarDef(updated) : b))
+    setLocationDialog(null)
+  }
+
+  const deleteLocationBar = async (id: string) => {
+    await fetch(`/api/location-schedules/${id}`, { method: "DELETE" })
+    setLocationBars(prev => prev.filter(b => b.id !== id))
+    setSelectedBarIds(prev => { const n = new Set(prev); n.delete(id); return n })
   }
 
   const pasteBar = async (row: number, col: number) => {
@@ -756,6 +883,26 @@ export default function SpreadsheetGrid({
       startDate: bar.startDate, endDate: bar.endDate,
       assigneeId: bar.assigneeId, assigneeName: bar.assignee,
       locationId: bar.locationId, locationName: bar.locationName,
+    }
+  }
+
+  const locationDialogInitial = (): LocationScheduleFormData | null => {
+    if (!locationDialog) return null
+    if (locationDialog.mode === "new") {
+      return {
+        locationId: locations[0]?.id ?? "",
+        deviceId:   locationDialog.deviceId,
+        startDate:  locationDialog.startDate,
+        endDate:    locationDialog.endDate,
+      }
+    }
+    const bar = locationBars.find(b => b.id === locationDialog.barId)
+    if (!bar) return null
+    return {
+      locationId: bar.locationId,
+      deviceId:   bar.deviceId,
+      startDate:  bar.startDate,
+      endDate:    bar.endDate,
     }
   }
 
@@ -820,10 +967,12 @@ export default function SpreadsheetGrid({
     return <SkeletonGrid ROW_HDR_W={ROW_HDR_W} tasks={tasks} />
   }
 
-  const init     = dialogInitial()
-  const tipInfo  = tooltipInfo()
-  const barId    = contextMenu?.type === "bar" ? contextMenu.barId : ""
-  const multiSel = selectedBarIds.size > 1 && selectedBarIds.has(barId)
+  const init         = dialogInitial()
+  const locationInit = locationDialogInitial()
+  const tipInfo      = tooltipInfo()
+  const barId        = contextMenu?.type === "bar" ? contextMenu.barId : ""
+  const multiSel     = selectedBarIds.size > 1 && selectedBarIds.has(barId)
+  const isLocBar     = locationBars.some(b => b.id === barId)
 
   // タブジャンプ: 単体バー右クリック時に計算
   const jumpBar = contextMenu?.type === "bar" ? bars.find(b => b.id === barId) : undefined
@@ -1103,13 +1252,14 @@ export default function SpreadsheetGrid({
           {Array.from({ length: visibleRows.end - visibleRows.start + 1 }, (_, i) => {
             const row  = visibleRows.start + i
             if (row >= totalRows) return null
-            const meta = rowMetas[row]
-            const bg   = DEVICE_BG[meta.groupIdx % DEVICE_BG.length]
+            const meta      = rowMetas[row]
+            const isLocRow  = meta.isLocationRow
+            const bg        = isLocRow ? "#f0fdf4" : DEVICE_BG[meta.groupIdx % DEVICE_BG.length]
             const bbW  = meta.isLast  ? "2px" : "1px"
             const bbC  = meta.isLast  ? "#94a3b8" : "#e5e7eb"
             const btW  = meta.isFirst ? "2px" : undefined
             const btC  = meta.isFirst ? "#94a3b8" : undefined
-            const devInfo = mode === "device" ? devices.find(d => d.id === meta.groupId) : undefined
+            const devInfo = mode === "device" && !isLocRow ? devices.find(d => d.id === meta.groupId) : undefined
 
             return (
               <React.Fragment key={`row-${row}`}>
@@ -1122,7 +1272,12 @@ export default function SpreadsheetGrid({
                   borderTop: btW ? `${btW} solid ${btC}` : undefined,
                   display: "flex", alignItems: "center",
                 }}>
-                  {meta.isFirst && mode === "device" && (
+                  {isLocRow && (
+                    <div style={{ paddingLeft: 6, display: "flex", alignItems: "center" }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: "#15803d", whiteSpace: "nowrap" }}>📍 場所</span>
+                    </div>
+                  )}
+                  {!isLocRow && meta.isFirst && mode === "device" && (
                     <>
                       <div style={{ width: DEV_HDR_W1, paddingLeft: 6, overflow: "hidden" }}>
                         <div className="text-[9px] font-semibold text-gray-700 truncate leading-tight">{devInfo?.modelName}</div>
@@ -1137,10 +1292,10 @@ export default function SpreadsheetGrid({
                       </div>
                     </>
                   )}
-                  {meta.isFirst && mode === "assignee" && (
+                  {!isLocRow && meta.isFirst && mode === "assignee" && (
                     <span className="text-[10px] font-semibold text-gray-700 whitespace-nowrap pl-2">{meta.groupName}</span>
                   )}
-                  {meta.isFirst && mode === "location" && (
+                  {!isLocRow && meta.isFirst && mode === "location" && (
                     <span className="text-[10px] font-semibold text-gray-700 whitespace-nowrap pl-2">{meta.groupName}</span>
                   )}
                 </div>
@@ -1148,7 +1303,9 @@ export default function SpreadsheetGrid({
                 {Array.from({ length: totalCols }, (_, col) => (
                   <div key={`${row},${col}`} style={{
                     width: CELL_SIZE, height: CELL_SIZE,
-                    backgroundColor: weekendCols.has(col) ? "#fff1f2" : bg,
+                    backgroundColor: isLocRow
+                      ? (weekendCols.has(col) ? "#dcfce7" : "#f0fdf4")
+                      : (weekendCols.has(col) ? "#fff1f2" : bg),
                     borderRight: viewMode === "slot" && (col + 1) % SLOT_COUNT === 0
                       ? "1px solid #94a3b8" : "1px solid #e5e7eb",
                     borderBottom: `${bbW} solid ${bbC}`,
@@ -1166,7 +1323,7 @@ export default function SpreadsheetGrid({
 
           {/* ━━━ バー描画 ━━━ */}
           {visibleBars.map(bar => {
-            const c   = taskColorMap[bar.taskId] ?? { bg: "#6b7280", fg: "#fff" }
+            const c   = taskColorMap[bar.taskId] ?? { bg: bar.colorBg, fg: bar.colorFg }
             const sel = selectedBarIds.has(bar.id)
             return (
               <div key={bar.id} style={{
@@ -1236,23 +1393,48 @@ export default function SpreadsheetGrid({
           onNewSchedule={() => {
             if (contextMenu.type !== "cell") return
             const meta = rowMetas[contextMenu.row]
-            setDialog({
-              mode: "new",
-              deviceId:          mode === "device"   ? (meta?.groupId ?? devices[0]?.id ?? "")   : devices[0]?.id ?? "",
-              defaultAssigneeId: mode === "assignee" ? (meta?.groupId ?? assignees[0]?.id ?? "") : undefined,
-              defaultLocationId: mode === "location" ? (meta?.groupId ?? locations[0]?.id ?? "") : undefined,
-              startDate: colToDate(contextMenu.col),
-              endDate:   colToEndDate(contextMenu.col),
-            })
+            if (meta?.isLocationRow) {
+              setLocationDialog({
+                mode: "new",
+                deviceId:  meta.groupId,
+                startDate: colToDate(contextMenu.col),
+                endDate:   colToEndDate(contextMenu.col),
+              })
+            } else {
+              setDialog({
+                mode: "new",
+                deviceId:          mode === "device"   ? (meta?.groupId ?? devices[0]?.id ?? "")   : devices[0]?.id ?? "",
+                defaultAssigneeId: mode === "assignee" ? (meta?.groupId ?? assignees[0]?.id ?? "") : undefined,
+                defaultLocationId: mode === "location" ? (meta?.groupId ?? locations[0]?.id ?? "") : undefined,
+                startDate: colToDate(contextMenu.col),
+                endDate:   colToEndDate(contextMenu.col),
+              })
+            }
           }}
           onPaste={() => { if (contextMenu.type === "cell") pasteBar(contextMenu.row, contextMenu.col) }}
-          onDetail={() => { if (contextMenu.type === "bar") setTooltip({ barId, anchorX: contextMenu.x, anchorY: contextMenu.y }) }}
-          onEdit={() => { if (contextMenu.type === "bar") setDialog({ mode: "edit", barId }) }}
-          onCopy={() => {
-            if (contextMenu.type === "bar") { const b = bars.find(b => b.id === barId); if (b) setCopiedBars([b]) }
+          onDetail={() => {
+            if (contextMenu.type === "bar" && !isLocBar)
+              setTooltip({ barId, anchorX: contextMenu.x, anchorY: contextMenu.y })
           }}
-          onCopySelected={() => { const sel = bars.filter(b => selectedBarIds.has(b.id)); if (sel.length > 0) setCopiedBars(sel) }}
-          onDelete={() => { if (contextMenu.type === "bar") deleteBar(barId) }}
+          onEdit={() => {
+            if (contextMenu.type !== "bar") return
+            if (isLocBar) setLocationDialog({ mode: "edit", barId })
+            else          setDialog({ mode: "edit", barId })
+          }}
+          onCopy={() => {
+            if (contextMenu.type === "bar" && !isLocBar) {
+              const b = bars.find(b => b.id === barId); if (b) setCopiedBars([b])
+            }
+          }}
+          onCopySelected={() => {
+            const sel = bars.filter(b => selectedBarIds.has(b.id))
+            if (sel.length > 0) setCopiedBars(sel)
+          }}
+          onDelete={() => {
+            if (contextMenu.type !== "bar") return
+            if (isLocBar) deleteLocationBar(barId)
+            else          deleteBar(barId)
+          }}
           onDeleteSelected={deleteSelected}
           onClose={() => setContextMenu(null)}
           jumpToOtherTabLabel={!multiSel ? jumpToOtherTabLabel : undefined}
@@ -1260,7 +1442,7 @@ export default function SpreadsheetGrid({
         />
       )}
 
-      {/* 予定ダイアログ */}
+      {/* 装置予定ダイアログ */}
       {dialog && init && (
         <ScheduleDialog
           mode={dialog.mode} initial={init}
@@ -1268,6 +1450,21 @@ export default function SpreadsheetGrid({
           minDate={dates[0]} maxDate={dates[totalCols > 0 ? dates.length - 1 : 0]}
           onSave={data => dialog.mode === "new" ? addBar(data) : editBar(dialog.barId, data)}
           onClose={() => setDialog(null)}
+        />
+      )}
+
+      {/* 場所使用予定ダイアログ */}
+      {locationDialog && locationInit && (
+        <LocationScheduleDialog
+          mode={locationDialog.mode} initial={locationInit}
+          locations={locations} devices={devices}
+          minDate={dates[0]} maxDate={dates[totalCols > 0 ? dates.length - 1 : 0]}
+          onSave={data =>
+            locationDialog.mode === "new"
+              ? addLocationBar(data)
+              : editLocationBar(locationDialog.barId, data)
+          }
+          onClose={() => setLocationDialog(null)}
         />
       )}
 
