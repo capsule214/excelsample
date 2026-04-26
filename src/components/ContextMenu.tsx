@@ -18,6 +18,9 @@ interface Props {
   onDelete: () => void
   onDeleteSelected: () => void
   onClose: () => void
+  // タブジャンプ (単体選択時のみ)
+  jumpToOtherTabLabel?: string
+  onJumpToOtherTab?: () => void
 }
 
 export function ContextMenu({
@@ -25,6 +28,7 @@ export function ContextMenu({
   clipboardCount, isMultiSelect, selectedCount,
   onNewSchedule, onPaste, onDetail, onEdit, onCopy, onCopySelected, onDelete, onDeleteSelected,
   onClose,
+  jumpToOtherTabLabel, onJumpToOtherTab,
 }: Props) {
   useEffect(() => {
     const handler = () => onClose()
@@ -81,6 +85,14 @@ export function ContextMenu({
           <button className={item} onClick={() => { onCopy(); onClose() }}>
             <span className="text-gray-400">📋</span> コピー
           </button>
+          {onJumpToOtherTab && jumpToOtherTabLabel && (
+            <>
+              {divider}
+              <button className={item} onClick={() => { onJumpToOtherTab(); onClose() }}>
+                <span className="text-blue-400">↗</span> {jumpToOtherTabLabel}
+              </button>
+            </>
+          )}
           {divider}
           <button className={danger} onClick={() => { onDelete(); onClose() }}>
             <span>🗑</span> 削除

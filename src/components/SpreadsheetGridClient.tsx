@@ -4,6 +4,7 @@ import dynamic from "next/dynamic"
 import { useState, useEffect } from "react"
 import { DisplaySettingsDialog } from "./DisplaySettingsDialog"
 import type { DeviceInfo, AssigneeInfo, TaskInfo, LocationInfo } from "./ScheduleDialog"
+import type { JumpTarget } from "./SpreadsheetGrid"
 
 const SpreadsheetGrid = dynamic(() => import("@/components/SpreadsheetGrid"), { ssr: false })
 
@@ -71,6 +72,7 @@ export default function SpreadsheetGridClient() {
   const [displaySettings,setDisplaySettings] = useState<DisplaySettings | null>(null)
   const [showDialog,     setShowDialog    ] = useState(false)
   const [loading,        setLoading       ] = useState(true)
+  const [jumpTarget,     setJumpTarget    ] = useState<JumpTarget | null>(null)
 
   useEffect(() => {
     const safeJson = async (url: string) => {
@@ -88,7 +90,8 @@ export default function SpreadsheetGridClient() {
       safeJson("/api/tasks"),
       safeJson("/api/display-settings"),
       safeJson("/api/locations"),
-    ]).then(([devs, asgns, tsks, settings, locs]: [DeviceInfo[], AssigneeInfo[], TaskInfo[], DisplaySettings, LocationInfo[]]) => {
+    ]).then(results => {
+      const [devs, asgns, tsks, settings, locs] = results as [DeviceInfo[], AssigneeInfo[], TaskInfo[], DisplaySettings, LocationInfo[]]
       setDevices(devs)
       setAssignees(asgns)
       setTasks(tsks)
@@ -97,6 +100,11 @@ export default function SpreadsheetGridClient() {
       setLoading(false)
     }).catch(err => console.error("Initial fetch failed:", err))
   }, [])
+
+  const handleJumpToOtherTab = (target: JumpTarget) => {
+    setJumpTarget(target)
+    setTab(target.targetMode as Tab)
+  }
 
   const handleSaveSettings = async (deviceIds: string[], assigneeIds: string[]) => {
     await fetch("/api/display-settings", {
@@ -157,6 +165,9 @@ export default function SpreadsheetGridClient() {
               mode="device"
               devices={devices} assignees={assignees} tasks={tasks} locations={locations}
               visibleGroupIds={displaySettings?.deviceIds}
+              onJumpToOtherTab={handleJumpToOtherTab}
+              scrollToTarget={jumpTarget?.targetMode === "device" ? jumpTarget : null}
+              onScrollToTargetDone={() => setJumpTarget(null)}
             />
           </div>
           <div className={`flex-1 overflow-hidden ${tab === "assignee" ? "flex" : "hidden"} flex-col`}>
@@ -164,6 +175,9 @@ export default function SpreadsheetGridClient() {
               mode="assignee"
               devices={devices} assignees={assignees} tasks={tasks} locations={locations}
               visibleGroupIds={displaySettings?.assigneeIds}
+              onJumpToOtherTab={handleJumpToOtherTab}
+              scrollToTarget={jumpTarget?.targetMode === "assignee" ? jumpTarget : null}
+              onScrollToTargetDone={() => setJumpTarget(null)}
             />
           </div>
           <div className={`flex-1 overflow-hidden ${tab === "location" ? "flex" : "hidden"} flex-col`}>

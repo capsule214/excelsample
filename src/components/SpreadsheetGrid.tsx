@@ -254,6 +254,14 @@ function SkeletonGrid({ ROW_HDR_W, tasks }: SkeletonProps) {
   )
 }
 
+/* ─── タブジャンプ型 ──────────────────────────────────── */
+export interface JumpTarget {
+  targetMode: "device" | "assignee" | "location"
+  groupId:    string   // 移動先のグループID (assigneeId / deviceId)
+  barId:      string   // ハイライトするバーID
+  barDate:    Date     // ビューを合わせる基準日
+}
+
 /* ─── コンポーネント Props ───────────────────────────── */
 interface SpreadsheetGridProps {
   mode:             "device" | "assignee" | "location"
@@ -262,9 +270,15 @@ interface SpreadsheetGridProps {
   tasks:            TaskInfo[]
   locations:        LocationInfo[]
   visibleGroupIds?: string[]
+  scrollToTarget?:  JumpTarget | null
+  onJumpToOtherTab?:     (target: JumpTarget) => void
+  onScrollToTargetDone?: () => void
 }
 
-export default function SpreadsheetGrid({ mode, devices, assignees, tasks, locations, visibleGroupIds }: SpreadsheetGridProps) {
+export default function SpreadsheetGrid({
+  mode, devices, assignees, tasks, locations, visibleGroupIds,
+  scrollToTarget, onJumpToOtherTab, onScrollToTargetDone,
+}: SpreadsheetGridProps) {
   const ROW_HDR_W = mode === "device" ? DEV_HDR_W : ASGN_HDR_W
 
   const [loading,      setLoading     ] = useState(true)
@@ -415,6 +429,54 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, locat
     const end   = Math.min(totalRows - 1, Math.ceil((scrolledPast + clientHeight) / CELL_SIZE) + BUFFER_ROWS)
     setVisibleRows({ start, end })
   }, [totalRows, loading, dataTop])
+
+  /* ── タブジャンプ: scrollToTarget が来たらスクロール＆ハイライト ── */
+  useEffect(() => {
+    if (!scrollToTarget || scrollToTarget.targetMode !== mode) return
+
+    const barMs        = scrollToTarget.barDate.getTime()
+    const currStartMs  = appliedStartDate.getTime()
+    const currEndMs    = addMonths(appliedStartDate, appliedMonths).getTime()
+
+    // バーの日付がビュー範囲外なら表示開始日を調整
+    let newStart = appliedStartDate
+    if (barMs < currStartMs || barMs > currEndMs) {
+      newStart = new Date(barMs - Math.floor(appliedMonths * 15) * 86400000)
+      newStart.setHours(0, 0, 0, 0)
+      setAppliedStartDate(newStart)
+      setInputStartDate(toInputStr(newStart))
+    }
+
+    // 対象グループの先頭行を探す
+    const rowIdx = rowMetas.findIndex(m => m.groupId === scrollToTarget.groupId && m.isFirst)
+
+    // バーをハイライト
+    setSelectedBarIds(new Set([scrollToTarget.barId]))
+
+    // 2フレーム後にスクロール (appliedStartDate 更新の再描画を待つ)
+    let raf1 = 0
+    const raf0 = requestAnimationFrame(() => {
+      raf1 = requestAnimationFrame(() => {
+        const c = containerRef.current
+        if (!c) { onScrollToTargetDone?.(); return }
+
+        // 縦スクロール: 行を画面中央より少し上に
+        if (rowIdx >= 0) {
+          c.scrollTop = Math.max(0, dataTop + rowIdx * CELL_SIZE - c.clientHeight / 3)
+        }
+
+        // 横スクロール: バー日付を中央付近に
+        const col = Math.floor((barMs - newStart.getTime()) / 86400000)
+        if (col >= 0) {
+          c.scrollLeft = Math.max(0, col * CELL_SIZE - (c.clientWidth - ROW_HDR_W) / 2)
+        }
+
+        onScrollToTargetDone?.()
+      })
+    })
+    return () => { cancelAnimationFrame(raf0); cancelAnimationFrame(raf1) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollToTarget])
 
   /* ── カレンダーポップアップ ── */
   const openCalendar = () => {
@@ -762,6 +824,19 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, locat
   const tipInfo  = tooltipInfo()
   const barId    = contextMenu?.type === "bar" ? contextMenu.barId : ""
   const multiSel = selectedBarIds.size > 1 && selectedBarIds.has(barId)
+
+  // タブジャンプ: 単体バー右クリック時に計算
+  const jumpBar = contextMenu?.type === "bar" ? bars.find(b => b.id === barId) : undefined
+  const jumpToOtherTabLabel =
+    mode === "device"   ? "担当者予定を表示" :
+    mode === "assignee" ? "装置予定を表示"   : undefined
+  const handleJumpToOtherTab = (jumpBar && onJumpToOtherTab && jumpToOtherTabLabel) ? () => {
+    if (mode === "device") {
+      onJumpToOtherTab({ targetMode: "assignee", groupId: jumpBar.assigneeId, barId: jumpBar.id, barDate: jumpBar.startDate })
+    } else if (mode === "assignee") {
+      onJumpToOtherTab({ targetMode: "device",   groupId: jumpBar.deviceId,   barId: jumpBar.id, barDate: jumpBar.startDate })
+    }
+  } : undefined
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden bg-white select-none">
@@ -1180,6 +1255,8 @@ export default function SpreadsheetGrid({ mode, devices, assignees, tasks, locat
           onDelete={() => { if (contextMenu.type === "bar") deleteBar(barId) }}
           onDeleteSelected={deleteSelected}
           onClose={() => setContextMenu(null)}
+          jumpToOtherTabLabel={!multiSel ? jumpToOtherTabLabel : undefined}
+          onJumpToOtherTab={!multiSel ? handleJumpToOtherTab : undefined}
         />
       )}
 
