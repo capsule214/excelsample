@@ -366,6 +366,18 @@ export default function SpreadsheetGrid({
     return s
   }, [dates, viewMode])
 
+  // 連続する週末列をスパンにまとめる（オーバーレイ用）
+  const weekendSpans = useMemo(() => {
+    const cols = [...weekendCols].sort((a, b) => a - b)
+    const spans: { start: number; end: number }[] = []
+    for (const col of cols) {
+      const last = spans[spans.length - 1]
+      if (last && col === last.end + 1) { last.end = col }
+      else                              { spans.push({ start: col, end: col }) }
+    }
+    return spans
+  }, [weekendCols])
+
   /* ── 日付↔列変換 ── */
   const colToDate = useCallback((col: number): Date => {
     if (viewMode === "day") {
@@ -474,20 +486,28 @@ export default function SpreadsheetGrid({
     [bars, groups, getGroupId, minRowsForMode, locationBarsForLayout]
   )
 
+  // ResizeObserver で表示/非表示を検知して可視行を計算。
+  // display:none のとき clientHeight=0 → end=-1 で DOM ノード 0 件に抑える。
+  // タブ切り替えで visible になった瞬間も自動再計算される。
   useEffect(() => {
     const el = containerRef.current
-    if (!el || totalRows === 0) return
-    const { scrollTop, clientHeight } = el
-    // hidden クラス(display:none)で clientHeight=0 の場合は全行を描画対象にする
-    if (clientHeight === 0) {
-      setVisibleRows({ start: 0, end: totalRows - 1 })
-      return
+    if (!el) return
+    const calc = () => {
+      const { scrollTop, clientHeight } = el
+      if (clientHeight === 0 || totalRows === 0) {
+        setVisibleRows(prev => (prev.start === 0 && prev.end === -1) ? prev : { start: 0, end: -1 })
+        return
+      }
+      const scrolledPast = Math.max(0, scrollTop - dataTop)
+      const start = Math.max(0, Math.floor(scrolledPast / CELL_SIZE) - BUFFER_ROWS)
+      const end   = Math.min(totalRows - 1, Math.ceil((scrolledPast + clientHeight) / CELL_SIZE) + BUFFER_ROWS)
+      setVisibleRows(prev => (prev.start === start && prev.end === end) ? prev : { start, end })
     }
-    const scrolledPast = Math.max(0, scrollTop - dataTop)
-    const start = Math.max(0, Math.floor(scrolledPast / CELL_SIZE) - BUFFER_ROWS)
-    const end   = Math.min(totalRows - 1, Math.ceil((scrolledPast + clientHeight) / CELL_SIZE) + BUFFER_ROWS)
-    setVisibleRows({ start, end })
-  }, [totalRows, loading, dataTop])
+    calc()
+    const ro = new ResizeObserver(calc)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [totalRows, dataTop])
 
   /* ── タブジャンプ: scrollToTarget が来たらスクロール＆ハイライト ── */
   useEffect(() => {
@@ -1300,18 +1320,19 @@ export default function SpreadsheetGrid({
                   )}
                 </div>
 
-                {Array.from({ length: totalCols }, (_, col) => (
-                  <div key={`${row},${col}`} style={{
-                    width: CELL_SIZE, height: CELL_SIZE,
-                    backgroundColor: isLocRow
-                      ? (weekendCols.has(col) ? "#dcfce7" : "#f0fdf4")
-                      : (weekendCols.has(col) ? "#fff1f2" : bg),
-                    borderRight: viewMode === "slot" && (col + 1) % SLOT_COUNT === 0
-                      ? "1px solid #94a3b8" : "1px solid #e5e7eb",
-                    borderBottom: `${bbW} solid ${bbC}`,
-                    borderTop: btW ? `${btW} solid ${btC}` : undefined,
-                  }} />
-                ))}
+                <div style={{
+                  gridColumn: "2 / -1",
+                  height: CELL_SIZE,
+                  backgroundColor: isLocRow ? "#f0fdf4" : bg,
+                  backgroundImage: viewMode === "slot"
+                    ? [
+                        `repeating-linear-gradient(90deg,transparent,transparent ${CELL_SIZE * SLOT_COUNT - 1}px,#94a3b8 ${CELL_SIZE * SLOT_COUNT - 1}px,#94a3b8 ${CELL_SIZE * SLOT_COUNT}px)`,
+                        `repeating-linear-gradient(90deg,transparent,transparent ${CELL_SIZE - 1}px,#e5e7eb ${CELL_SIZE - 1}px,#e5e7eb ${CELL_SIZE}px)`,
+                      ].join(",")
+                    : `repeating-linear-gradient(90deg,transparent,transparent ${CELL_SIZE - 1}px,#e5e7eb ${CELL_SIZE - 1}px,#e5e7eb ${CELL_SIZE}px)`,
+                  borderBottom: `${bbW} solid ${bbC}`,
+                  borderTop: btW ? `${btW} solid ${btC}` : undefined,
+                }} />
               </React.Fragment>
             )
           })}
@@ -1319,6 +1340,25 @@ export default function SpreadsheetGrid({
           {/* ━━━ 下部スペーサー ━━━ */}
           {visibleRows.end < totalRows - 1 && (
             <div style={{ gridColumn: "1 / -1", height: (totalRows - visibleRows.end - 1) * CELL_SIZE }} />
+          )}
+
+          {/* ━━━ 週末列ハイライト (全行共通・絶対配置で1列1div) ━━━ */}
+          {weekendSpans.length > 0 && totalRows > 0 && (
+            <div style={{
+              position: "absolute", pointerEvents: "none", zIndex: 1,
+              left: ROW_HDR_W, top: dataTop,
+              width: CELL_SIZE * totalCols, height: totalRows * CELL_SIZE,
+              overflow: "hidden",
+            }}>
+              {weekendSpans.map(span => (
+                <div key={span.start} style={{
+                  position: "absolute",
+                  left: span.start * CELL_SIZE, top: 0,
+                  width: (span.end - span.start + 1) * CELL_SIZE, height: "100%",
+                  backgroundColor: "#fff1f2", opacity: 0.55,
+                }} />
+              ))}
+            </div>
           )}
 
           {/* ━━━ バー描画 ━━━ */}
