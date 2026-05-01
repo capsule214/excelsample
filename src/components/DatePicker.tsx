@@ -120,11 +120,16 @@ export function DatePicker({ value, onChange, minDate, maxDate, rangeStart, rang
           else if (dow === 0)  textColor = "text-red-500"
           else if (dow === 6)  textColor = "text-blue-500"
 
+          const isToday = sameDay(date, new Date())
+
           /* 背景・形状 */
           const isEndpoint = isRangeStart || isRangeEnd
           let bg = ""
           if (isSelected) {
             bg = "bg-blue-500 text-white rounded-full shadow-md"
+            textColor = "text-white"
+          } else if (isToday && !disabled) {
+            bg = "bg-red-500 rounded-full"
             textColor = "text-white"
           } else if (isEndpoint) {
             bg = "bg-blue-400 text-white rounded-full"

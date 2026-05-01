@@ -6,6 +6,7 @@ import { ScheduleDialog, type DialogFormData, type DeviceInfo, type TaskInfo, ty
 import { LocationScheduleDialog, type LocationScheduleFormData } from "./LocationScheduleDialog"
 import { BarTooltip, type TooltipBarInfo } from "./BarTooltip"
 import { DatePicker } from "./DatePicker"
+import { computeHolidayCols } from "@/lib/holidays"
 
 /* ─── 固定定数 ──────────────────────────────────────── */
 const CELL_SIZE   = 20
@@ -22,8 +23,6 @@ const SLOT_COUNT  = 6
 
 const DEFAULT_MONTHS = 4
 const DEFAULT_COUNT  = 1000
-const DEVICE_BG      = ["#f8fafc","#f0f9ff","#fefce8","#fdf4ff","#f0fdf4",
-                        "#fff7ed","#ecfdf5","#fef2f2","#f5f3ff","#f0fdfa"]
 
 /* ─── 時間→スロット変換 ─────────────────────────────── */
 function startHourToSlot(h: number): number {
@@ -352,23 +351,24 @@ export default function SpreadsheetGrid({
   const dataTop  = HDR_H * 4   // 日モード: 年月/週/日/曜日, スロットモード: 年/月/日/スロット
   const totalCols = viewMode === "slot" ? dates.length * SLOT_COUNT : dates.length
 
-  const weekendCols = useMemo(() => {
+  const grayCols = useMemo(() => {
+    const holidayDayIdxs = computeHolidayCols(dates)
     const s = new Set<number>()
     dates.forEach((d, i) => {
-      if (d.getDay() === 0 || d.getDay() === 6) {
-        if (viewMode === "day") {
-          s.add(i)
-        } else {
-          for (let k = 0; k < SLOT_COUNT; k++) s.add(i * SLOT_COUNT + k)
-        }
+      const isGray = d.getDay() === 0 || d.getDay() === 6 || holidayDayIdxs.has(i)
+      if (!isGray) return
+      if (viewMode === "day") {
+        s.add(i)
+      } else {
+        for (let k = 0; k < SLOT_COUNT; k++) s.add(i * SLOT_COUNT + k)
       }
     })
     return s
   }, [dates, viewMode])
 
-  // 連続する週末列をスパンにまとめる（オーバーレイ用）
-  const weekendSpans = useMemo(() => {
-    const cols = [...weekendCols].sort((a, b) => a - b)
+  // 連続するグレー列をスパンにまとめる（オーバーレイ用）
+  const graySpans = useMemo(() => {
+    const cols = [...grayCols].sort((a, b) => a - b)
     const spans: { start: number; end: number }[] = []
     for (const col of cols) {
       const last = spans[spans.length - 1]
@@ -376,7 +376,7 @@ export default function SpreadsheetGrid({
       else                              { spans.push({ start: col, end: col }) }
     }
     return spans
-  }, [weekendCols])
+  }, [grayCols])
 
   /* ── 日付↔列変換 ── */
   const colToDate = useCallback((col: number): Date => {
@@ -975,7 +975,7 @@ export default function SpreadsheetGrid({
   const colHdrStyle = (col: number, topPx: number): React.CSSProperties => ({
     width: CELL_SIZE, height: HDR_H, position: "sticky", top: topPx, zIndex: 20,
     borderRight: "1px solid #d1d5db", borderBottom: "1px solid #d1d5db",
-    backgroundColor: weekendCols.has(col) ? "#fff1f2" : "#f3f4f6",
+    backgroundColor: grayCols.has(col) ? "#e5e7eb" : "#f9fafb",
   })
   const cornerStyle = (topPx: number, extra?: React.CSSProperties): React.CSSProperties => ({
     width: ROW_HDR_W, height: HDR_H, position: "sticky", top: topPx, left: 0, zIndex: 30,
@@ -1179,7 +1179,7 @@ export default function SpreadsheetGrid({
               <div style={cornerStyle(HDR_H * 2)} />
               {dates.map((date, col) => (
                 <div key={`d${col}`} style={colHdrStyle(col, HDR_H * 2)} className="flex items-center justify-center">
-                  <span className={`text-[9px] font-medium ${weekendCols.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>
+                  <span className={`text-[9px] font-medium ${grayCols.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>
                     {date.getDate()}
                   </span>
                 </div>
@@ -1237,7 +1237,7 @@ export default function SpreadsheetGrid({
                     borderRight: isDayEnd ? "1px solid #9ca3af" : "1px solid #d1d5db",
                   }} className="flex items-center justify-center">
                     {col % SLOT_COUNT === 0 && (
-                      <span className={`text-[9px] font-medium ${weekendCols.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>
+                      <span className={`text-[9px] font-medium ${grayCols.has(col) ? "text-red-500 font-bold" : "text-gray-600"}`}>
                         {date?.getDate()}
                       </span>
                     )}
@@ -1274,7 +1274,7 @@ export default function SpreadsheetGrid({
             if (row >= totalRows) return null
             const meta      = rowMetas[row]
             const isLocRow  = meta.isLocationRow
-            const bg        = isLocRow ? "#f0fdf4" : DEVICE_BG[meta.groupIdx % DEVICE_BG.length]
+            const bg        = isLocRow ? "#f0fdf4" : "#ffffff"
             const bbW  = meta.isLast  ? "2px" : "1px"
             const bbC  = meta.isLast  ? "#94a3b8" : "#e5e7eb"
             const btW  = meta.isFirst ? "2px" : undefined
@@ -1342,20 +1342,20 @@ export default function SpreadsheetGrid({
             <div style={{ gridColumn: "1 / -1", height: (totalRows - visibleRows.end - 1) * CELL_SIZE }} />
           )}
 
-          {/* ━━━ 週末列ハイライト (全行共通・絶対配置で1列1div) ━━━ */}
-          {weekendSpans.length > 0 && totalRows > 0 && (
+          {/* ━━━ 休日・週末列ハイライト (全行共通・絶対配置) ━━━ */}
+          {graySpans.length > 0 && totalRows > 0 && (
             <div style={{
               position: "absolute", pointerEvents: "none", zIndex: 1,
               left: ROW_HDR_W, top: dataTop,
               width: CELL_SIZE * totalCols, height: totalRows * CELL_SIZE,
               overflow: "hidden",
             }}>
-              {weekendSpans.map(span => (
+              {graySpans.map(span => (
                 <div key={span.start} style={{
                   position: "absolute",
                   left: span.start * CELL_SIZE, top: 0,
                   width: (span.end - span.start + 1) * CELL_SIZE, height: "100%",
-                  backgroundColor: "#fff1f2", opacity: 0.55,
+                  backgroundColor: "#d1d5db", opacity: 0.45,
                 }} />
               ))}
             </div>
