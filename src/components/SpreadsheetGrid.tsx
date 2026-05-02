@@ -20,6 +20,7 @@ const ASGN_HDR_W  = 80
 
 const SLOT_ABBREV = ["前1", "前2", "後1", "後2", "残1", "残2"] as const
 const SLOT_COUNT  = 6
+const HANDLE_W    = 5  // リサイズハンドル幅 (px)
 
 const DEFAULT_MONTHS = 4
 const DEFAULT_COUNT  = 1000
@@ -149,6 +150,18 @@ interface PlacedBar   extends BarDef { absoluteRow: number }
 interface RenderedBar extends PlacedBar { viewStartCol: number; viewEndCol: number }
 interface RowMeta { groupId: string; groupIdx: number; groupName: string; isFirst: boolean; isLast: boolean; isLocationRow: boolean }
 interface DragSel { startRow: number; startCol: number; curRow: number; curCol: number; active: boolean }
+
+interface BarDragState {
+  type:         "move" | "resize-left" | "resize-right"
+  primaryId:    string
+  draggedIds:   string[]
+  isLocIds:     Set<string>
+  startGridCol: number
+  startGridRow: number
+  initData:     Map<string, { startCol: number; endCol: number; absRow: number }>
+  deltaCol:     number
+  deltaRow:     number
+}
 
 type ContextMenuState =
   | { type: "cell"; x: number; y: number; row: number; col: number }
@@ -425,6 +438,8 @@ export default function SpreadsheetGrid({
   const containerRef        = useRef<HTMLDivElement>(null)
   const selCellRef          = useRef<HTMLDivElement>(null)
   const dragRectRef         = useRef<HTMLDivElement>(null)
+  const barDragRef  = useRef<BarDragState | null>(null)
+  const [barDragSnap, setBarDragSnap] = useState<BarDragState | null>(null)
   const dragSelRef          = useRef<DragSel | null>(null)
   const selectedCellRef     = useRef<{ row: number; col: number } | null>(null)
   const rectCacheRef        = useRef<DOMRect | null>(null)
@@ -701,6 +716,15 @@ export default function SpreadsheetGrid({
     return { row, col }
   }
 
+  const clientToClampedPos = (clientX: number, clientY: number) => {
+    const c = containerRef.current; if (!c) return { col: 0, row: 0 }
+    const rect = getRect(); if (!rect) return { col: 0, row: 0 }
+    return {
+      col: Math.max(0, Math.min(totalCols - 1, Math.floor((clientX - rect.left + c.scrollLeft - ROW_HDR_W) / CELL_SIZE))),
+      row: Math.max(0, Math.min(totalRows - 1, Math.floor((clientY - rect.top  + c.scrollTop  - dataTop ) / CELL_SIZE))),
+    }
+  }
+
   const showSelCell = (row: number, col: number) => {
     selectedCellRef.current = { row, col }
     const el = selCellRef.current; if (!el) return
@@ -726,6 +750,77 @@ export default function SpreadsheetGrid({
     el.style.height = `${(r1 - r0 + 1) * CELL_SIZE}px`
   }
 
+  const initBarDrag = (e: React.PointerEvent, barId: string, type: BarDragState["type"]) => {
+    const pos = clientToClampedPos(e.clientX, e.clientY)
+    const isLocIds = new Set(locationBars.map(b => b.id))
+    const draggedIds = type === "move" && selectedBarIds.size > 1 && selectedBarIds.has(barId)
+      ? [...selectedBarIds]
+      : [barId]
+    const initData = new Map<string, { startCol: number; endCol: number; absRow: number }>()
+    for (const id of draggedIds) {
+      const b = placedBars.find(p => p.id === id); if (!b) continue
+      const { sc, ec } = barToViewCols(b)
+      initData.set(id, { startCol: sc, endCol: ec, absRow: b.absoluteRow })
+    }
+    const state: BarDragState = {
+      type, primaryId: barId, draggedIds, isLocIds,
+      startGridCol: pos.col, startGridRow: pos.row,
+      initData, deltaCol: 0, deltaRow: 0,
+    }
+    barDragRef.current = state
+    setBarDragSnap({ ...state })
+    containerRef.current?.setPointerCapture(e.pointerId)
+  }
+
+  const commitBarDrag = async (snap: BarDragState) => {
+    const { type, primaryId, draggedIds, isLocIds, initData, deltaCol, deltaRow } = snap
+    if (type !== "move" && deltaCol === 0) return
+    if (type === "move" && deltaCol === 0 && deltaRow === 0) return
+
+    let targetGroupId: string | undefined
+    if (type === "move" && deltaRow !== 0) {
+      const pi = initData.get(primaryId)
+      if (pi) {
+        const tr = Math.max(0, Math.min(rowMetas.length - 1, pi.absRow + deltaRow))
+        targetGroupId = rowMetas[tr]?.groupId
+      }
+    }
+
+    await Promise.all(draggedIds.map(async id => {
+      const init = initData.get(id); if (!init) return
+      if (isLocIds.has(id)) {
+        const lb = locationBars.find(b => b.id === id); if (!lb) return
+        const sd = new Date(lb.startDate), ed = new Date(lb.endDate)
+        if (type === "move") { sd.setDate(sd.getDate() + deltaCol); ed.setDate(ed.getDate() + deltaCol) }
+        else if (type === "resize-left") { sd.setDate(sd.getDate() + deltaCol); if (sd >= ed) return }
+        else { ed.setDate(ed.getDate() + deltaCol); if (ed <= sd) return }
+        const devId = type === "move" && mode === "device" && targetGroupId ? targetGroupId : lb.deviceId
+        const body = { locationId: lb.locationId, deviceId: devId, startDate: toInputStr(sd), endDate: toInputStr(ed) }
+        const updated: ApiLocationBar = await fetch(`/api/location-schedules/${id}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        }).then(r => r.json())
+        setLocationBars(prev => prev.map(b => b.id === id ? apiLocationBarToLocationBarDef(updated) : b))
+      } else {
+        const bar = bars.find(b => b.id === id); if (!bar) return
+        const sd = new Date(bar.startDate), ed = new Date(bar.endDate)
+        if (type === "move") { sd.setDate(sd.getDate() + deltaCol); ed.setDate(ed.getDate() + deltaCol) }
+        else if (type === "resize-left") { sd.setDate(sd.getDate() + deltaCol); if (sd >= ed) return }
+        else { ed.setDate(ed.getDate() + deltaCol); if (ed <= sd) return }
+        const body = {
+          deviceId:   mode === "device"   ? (targetGroupId ?? bar.deviceId)   : bar.deviceId,
+          assigneeId: mode === "assignee" ? (targetGroupId ?? bar.assigneeId) : bar.assigneeId,
+          locationId: mode === "location" ? (targetGroupId ?? bar.locationId) : bar.locationId,
+          taskId: bar.taskId,
+          startDate: toIsoDateTime(sd), endDate: toIsoDateTime(ed),
+        }
+        const updated: ApiBar = await fetch(`/api/schedules/${id}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        }).then(r => r.json())
+        setBars(prev => prev.map(b => b.id === id ? apiBarToBarDef(updated) : b))
+      }
+    }))
+  }
+
   /* ── スクロール ── */
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight } = e.currentTarget
@@ -746,6 +841,15 @@ export default function SpreadsheetGrid({
     if (tooltip)     setTooltip(null)
   }
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (barDragRef.current) {
+      const state = barDragRef.current
+      const pos = clientToClampedPos(e.clientX, e.clientY)
+      const deltaCol = pos.col - state.startGridCol
+      const deltaRow = state.type === "move" ? pos.row - state.startGridRow : 0
+      barDragRef.current = { ...state, deltaCol, deltaRow }
+      setBarDragSnap({ ...barDragRef.current })
+      return
+    }
     const drag = dragSelRef.current; if (!drag) return
     const pos = getGridPos(e.clientX, e.clientY); if (!pos) return
     drag.curRow = pos.row; drag.curCol = pos.col
@@ -754,6 +858,13 @@ export default function SpreadsheetGrid({
   }
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.releasePointerCapture(e.pointerId)
+    if (barDragRef.current) {
+      const snap = barDragRef.current
+      barDragRef.current = null
+      setBarDragSnap(null)
+      commitBarDrag(snap)
+      return
+    }
     const drag = dragSelRef.current; dragSelRef.current = null
     updateDragRect(null)
     if (!drag) return
@@ -970,6 +1081,31 @@ export default function SpreadsheetGrid({
         }
       })
   }, [placedBars, visibleRows, dates, totalCols, viewMode])
+
+  const barDragIds = useMemo(() => new Set(barDragSnap?.draggedIds ?? []), [barDragSnap])
+
+  const ghostBars = useMemo(() => {
+    if (!barDragSnap) return []
+    const { type, draggedIds, initData, deltaCol, deltaRow } = barDragSnap
+    const colorMap = new Map<string, { bg: string; fg: string }>()
+    for (const b of bars) {
+      const c = taskColorMap[b.taskId] ?? { bg: b.colorBg, fg: b.colorFg }
+      colorMap.set(b.id, c)
+    }
+    for (const lb of locationBars) colorMap.set(lb.id, { bg: "#22c55e", fg: "#fff" })
+    return draggedIds.flatMap(id => {
+      const init = initData.get(id); if (!init) return []
+      let sc = init.startCol, ec = init.endCol, ar = init.absRow
+      if (type === "move") { sc += deltaCol; ec += deltaCol; ar += deltaRow }
+      else if (type === "resize-left") { sc = Math.min(init.endCol - 1, init.startCol + deltaCol) }
+      else { ec = Math.max(init.startCol + 1, init.endCol + deltaCol) }
+      sc = Math.max(0, sc); ec = Math.min(totalCols - 1, ec)
+      ar = Math.max(0, Math.min(totalRows - 1, ar))
+      if (ar < visibleRows.start || ar > visibleRows.end || sc > ec || ec < 0 || sc >= totalCols) return []
+      const color = colorMap.get(id); if (!color) return []
+      return [{ id, sc, ec, ar, bg: color.bg, fg: color.fg }]
+    })
+  }, [barDragSnap, bars, locationBars, taskColorMap, totalCols, totalRows, visibleRows])
 
   /* ── スタイルヘルパー ── */
   const colHdrStyle = (col: number, topPx: number): React.CSSProperties => ({
@@ -1363,22 +1499,28 @@ export default function SpreadsheetGrid({
 
           {/* ━━━ バー描画 ━━━ */}
           {visibleBars.map(bar => {
-            const c   = taskColorMap[bar.taskId] ?? { bg: bar.colorBg, fg: bar.colorFg }
-            const sel = selectedBarIds.has(bar.id)
+            const c          = taskColorMap[bar.taskId] ?? { bg: bar.colorBg, fg: bar.colorFg }
+            const sel        = selectedBarIds.has(bar.id)
+            const isDragging = barDragIds.has(bar.id)
+            const barW       = (bar.viewEndCol - bar.viewStartCol + 1) * CELL_SIZE
+            const showHandles = barW >= 14 && !barDragSnap
             return (
               <div key={bar.id} style={{
                 position: "absolute",
                 left:   ROW_HDR_W + bar.viewStartCol * CELL_SIZE,
                 top:    dataTop   + bar.absoluteRow * CELL_SIZE + 1,
-                width:  (bar.viewEndCol - bar.viewStartCol + 1) * CELL_SIZE,
+                width:  barW,
                 height: CELL_SIZE - 2,
                 backgroundColor: c.bg, color: c.fg,
                 zIndex: sel ? 7 : 5, borderRadius: 3,
-                display: "flex", alignItems: "center", paddingLeft: 4,
-                overflow: "hidden", cursor: "pointer",
+                display: "flex", alignItems: "center",
+                overflow: "hidden",
+                cursor: barDragSnap ? (isDragging ? "grabbing" : "default") : "grab",
                 outline: sel ? "2px solid #1e3a8a" : "none",
                 outlineOffset: sel ? "1px" : "0",
                 boxShadow: sel ? "0 0 0 2px #1e3a8a,0 2px 6px rgba(0,0,0,.3)" : "0 1px 3px rgba(0,0,0,.25)",
+                opacity: isDragging ? 0.35 : 1,
+                userSelect: "none",
               }}
                 onPointerDown={e => {
                   if (e.button !== 0) return
@@ -1386,9 +1528,10 @@ export default function SpreadsheetGrid({
                   hideSelCell(); setContextMenu(null); setTooltip(null)
                   if (e.shiftKey || e.ctrlKey || e.metaKey) {
                     setSelectedBarIds(prev => { const n = new Set(prev); n.has(bar.id) ? n.delete(bar.id) : n.add(bar.id); return n })
-                  } else if (!selectedBarIds.has(bar.id)) {
-                    setSelectedBarIds(new Set([bar.id]))
+                    return
                   }
+                  if (!selectedBarIds.has(bar.id)) setSelectedBarIds(new Set([bar.id]))
+                  initBarDrag(e, bar.id, "move")
                 }}
                 onContextMenu={e => {
                   e.preventDefault(); e.stopPropagation(); setTooltip(null)
@@ -1396,12 +1539,46 @@ export default function SpreadsheetGrid({
                   setContextMenu({ type: "bar", x: e.clientX, y: e.clientY, barId: bar.id })
                 }}
               >
-                <span style={{ fontSize: 9, fontWeight: 700, whiteSpace: "nowrap", letterSpacing: "0.02em" }}>
+                {showHandles && (
+                  <div style={{ position: "absolute", left: 0, top: 0, width: HANDLE_W, height: "100%", cursor: "ew-resize", zIndex: 1 }}
+                    onPointerDown={e => {
+                      e.stopPropagation()
+                      if (!selectedBarIds.has(bar.id)) setSelectedBarIds(new Set([bar.id]))
+                      initBarDrag(e, bar.id, "resize-left")
+                    }}
+                  />
+                )}
+                {showHandles && (
+                  <div style={{ position: "absolute", right: 0, top: 0, width: HANDLE_W, height: "100%", cursor: "ew-resize", zIndex: 1 }}
+                    onPointerDown={e => {
+                      e.stopPropagation()
+                      if (!selectedBarIds.has(bar.id)) setSelectedBarIds(new Set([bar.id]))
+                      initBarDrag(e, bar.id, "resize-right")
+                    }}
+                  />
+                )}
+                <span style={{ fontSize: 9, fontWeight: 700, whiteSpace: "nowrap", letterSpacing: "0.02em", paddingLeft: showHandles ? HANDLE_W + 1 : 4 }}>
                   {bar.process}
                 </span>
               </div>
             )
           })}
+
+          {/* ━━━ ドラッグゴースト ━━━ */}
+          {ghostBars.map(g => (
+            <div key={`ghost-${g.id}`} style={{
+              position: "absolute",
+              left:   ROW_HDR_W + g.sc * CELL_SIZE,
+              top:    dataTop   + g.ar * CELL_SIZE + 1,
+              width:  (g.ec - g.sc + 1) * CELL_SIZE,
+              height: CELL_SIZE - 2,
+              backgroundColor: g.bg,
+              zIndex: 9, borderRadius: 3,
+              border: "2px dashed rgba(255,255,255,0.85)",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+              opacity: 0.8, pointerEvents: "none",
+            }} />
+          ))}
 
           {/* 選択セルオーバーレイ */}
           <div ref={selCellRef} style={{
