@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef, useEffect } from "react"
 import type { DeviceInfo, AssigneeInfo } from "./ScheduleDialog"
 
 interface ModelInfo { id: string; name: string; deviceCount: number }
@@ -17,6 +17,64 @@ interface Props {
 
 type Tab = "device" | "assignee"
 
+const ITEM_H = 36  // リスト行の固定高さ (px)
+const BUFFER = 4   // 可視範囲外に余分に描画する行数
+
+// ── 仮想スクロールリスト ────────────────────────────────────────────
+function VirtualList<T extends { id: string }>({
+  items,
+  renderItem,
+  emptyText = "該当なし",
+}: {
+  items: T[]
+  renderItem: (item: T) => React.ReactNode
+  emptyText?: string
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scrollTop,  setScrollTop ] = useState(0)
+  const [containerH, setContainerH] = useState(400)
+
+  useEffect(() => {
+    const el = containerRef.current; if (!el) return
+    setContainerH(el.clientHeight)
+    const ro = new ResizeObserver(() => setContainerH(el.clientHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const start = Math.max(0, Math.floor(scrollTop / ITEM_H) - BUFFER)
+  const end   = Math.min(items.length - 1, Math.ceil((scrollTop + containerH) / ITEM_H) + BUFFER)
+
+  return (
+    <div
+      ref={containerRef}
+      className="flex-1 overflow-y-auto border border-gray-200 rounded-lg"
+      onScroll={e => setScrollTop(e.currentTarget.scrollTop)}
+    >
+      {items.length === 0 ? (
+        <div className="p-4 text-center text-xs text-gray-400">{emptyText}</div>
+      ) : (
+        <div style={{ height: items.length * ITEM_H, position: "relative" }}>
+          {Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => {
+            const idx = start + i
+            const item = items[idx]
+            return (
+              <div
+                key={item.id}
+                style={{ position: "absolute", top: idx * ITEM_H, left: 0, right: 0, height: ITEM_H,
+                  borderBottom: "1px solid #f3f4f6" }}
+              >
+                {renderItem(item)}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── メインコンポーネント ────────────────────────────────────────────
 export function DisplaySettingsDialog({
   devices, assignees,
   selectedModelIds, selectedAssigneeIds, showLocationRowInDevice,
@@ -138,28 +196,22 @@ export function DisplaySettingsDialog({
                 >全解除</button>
               </div>
 
-              {/* 機種リスト */}
-              <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg">
-                {filteredModels.length === 0 ? (
-                  <div className="p-4 text-center text-xs text-gray-400">該当なし</div>
-                ) : (
-                  filteredModels.map(m => (
-                    <label
-                      key={m.id}
-                      className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={modelSel.has(m.id)}
-                        onChange={() => toggleModel(m.id)}
-                        className="w-3.5 h-3.5 accent-blue-500 shrink-0"
-                      />
-                      <span className="flex-1 text-sm font-semibold text-gray-700">{m.name}</span>
-                      <span className="text-[10px] text-gray-400 shrink-0">{m.deviceCount} 台</span>
-                    </label>
-                  ))
+              {/* 機種リスト (仮想スクロール) */}
+              <VirtualList
+                items={filteredModels}
+                renderItem={m => (
+                  <label className="flex items-center gap-3 px-3 hover:bg-gray-50 cursor-pointer h-full">
+                    <input
+                      type="checkbox"
+                      checked={modelSel.has(m.id)}
+                      onChange={() => toggleModel(m.id)}
+                      className="w-3.5 h-3.5 accent-blue-500 shrink-0"
+                    />
+                    <span className="flex-1 text-sm font-semibold text-gray-700">{m.name}</span>
+                    <span className="text-[10px] text-gray-400 shrink-0">{m.deviceCount} 台</span>
+                  </label>
                 )}
-              </div>
+              />
 
               <div className="text-[11px] text-gray-400 shrink-0">
                 {filteredModels.filter(m => modelSel.has(m.id)).length} / {filteredModels.length} 機種表示
@@ -188,26 +240,21 @@ export function DisplaySettingsDialog({
                 >全解除</button>
               </div>
 
-              <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg">
-                {filteredAssignees.length === 0 ? (
-                  <div className="p-4 text-center text-xs text-gray-400">該当なし</div>
-                ) : (
-                  filteredAssignees.map(a => (
-                    <label
-                      key={a.id}
-                      className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={asgnSel.has(a.id)}
-                        onChange={() => toggleAsgn(a.id)}
-                        className="w-3.5 h-3.5 accent-blue-500 shrink-0"
-                      />
-                      <span className="text-sm font-medium text-gray-700">{a.name}</span>
-                    </label>
-                  ))
+              {/* 担当者リスト (仮想スクロール) */}
+              <VirtualList
+                items={filteredAssignees}
+                renderItem={a => (
+                  <label className="flex items-center gap-3 px-3 hover:bg-gray-50 cursor-pointer h-full">
+                    <input
+                      type="checkbox"
+                      checked={asgnSel.has(a.id)}
+                      onChange={() => toggleAsgn(a.id)}
+                      className="w-3.5 h-3.5 accent-blue-500 shrink-0"
+                    />
+                    <span className="text-sm font-medium text-gray-700">{a.name}</span>
+                  </label>
                 )}
-              </div>
+              />
 
               <div className="text-[11px] text-gray-400 shrink-0">
                 {filteredAssignees.filter(a => asgnSel.has(a.id)).length} / {filteredAssignees.length} 件表示
