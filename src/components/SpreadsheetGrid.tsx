@@ -793,26 +793,51 @@ export default function SpreadsheetGrid({
       }
     }
 
+    // slot モードでは init.startCol/endCol がスロット列番号なのでcolToDate/colToEndDateで変換
+    const colsToDateRange = (init: { startCol: number; endCol: number }) => {
+      if (viewMode === "slot") {
+        const newSc = type === "resize-right" ? init.startCol : init.startCol + deltaCol
+        const newEc = type === "resize-left"  ? init.endCol   : init.endCol   + deltaCol
+        const clamped = { sc: Math.max(0, newSc), ec: Math.max(0, newEc) }
+        return { sd: colToDate(clamped.sc), ed: colToEndDate(clamped.ec) }
+      }
+      return null
+    }
+
     await Promise.all(draggedIds.map(async id => {
       const init = initData.get(id); if (!init) return
       if (isLocIds.has(id)) {
         const lb = locationBars.find(b => b.id === id); if (!lb) return
-        const sd = new Date(lb.startDate), ed = new Date(lb.endDate)
-        if (type === "move") { sd.setDate(sd.getDate() + deltaCol); ed.setDate(ed.getDate() + deltaCol) }
-        else if (type === "resize-left") { sd.setDate(sd.getDate() + deltaCol); if (sd >= ed) return }
-        else { ed.setDate(ed.getDate() + deltaCol); if (ed <= sd) return }
+        let sd: Date, ed: Date
+        const slotDates = colsToDateRange(init)
+        if (slotDates) {
+          sd = slotDates.sd; ed = slotDates.ed
+        } else {
+          sd = new Date(lb.startDate); ed = new Date(lb.endDate)
+          if (type === "move") { sd.setDate(sd.getDate() + deltaCol); ed.setDate(ed.getDate() + deltaCol) }
+          else if (type === "resize-left") { sd.setDate(sd.getDate() + deltaCol) }
+          else { ed.setDate(ed.getDate() + deltaCol) }
+        }
+        if (sd >= ed) return
         const devId = type === "move" && mode === "device" && targetGroupId ? targetGroupId : lb.deviceId
-        const body = { locationId: lb.locationId, deviceId: devId, startDate: toInputStr(sd), endDate: toInputStr(ed) }
+        const body = { locationId: lb.locationId, deviceId: devId, startDate: toIsoDateTime(sd), endDate: toIsoDateTime(ed) }
         const updated: ApiLocationBar = await fetch(`/api/location-schedules/${id}`, {
           method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
         }).then(r => r.json())
         setLocationBars(prev => prev.map(b => b.id === id ? apiLocationBarToLocationBarDef(updated) : b))
       } else {
         const bar = bars.find(b => b.id === id); if (!bar) return
-        const sd = new Date(bar.startDate), ed = new Date(bar.endDate)
-        if (type === "move") { sd.setDate(sd.getDate() + deltaCol); ed.setDate(ed.getDate() + deltaCol) }
-        else if (type === "resize-left") { sd.setDate(sd.getDate() + deltaCol); if (sd >= ed) return }
-        else { ed.setDate(ed.getDate() + deltaCol); if (ed <= sd) return }
+        let sd: Date, ed: Date
+        const slotDates = colsToDateRange(init)
+        if (slotDates) {
+          sd = slotDates.sd; ed = slotDates.ed
+        } else {
+          sd = new Date(bar.startDate); ed = new Date(bar.endDate)
+          if (type === "move") { sd.setDate(sd.getDate() + deltaCol); ed.setDate(ed.getDate() + deltaCol) }
+          else if (type === "resize-left") { sd.setDate(sd.getDate() + deltaCol) }
+          else { ed.setDate(ed.getDate() + deltaCol) }
+        }
+        if (sd >= ed) return
         const body = {
           deviceId:   mode === "device"   ? (targetGroupId ?? bar.deviceId)   : bar.deviceId,
           assigneeId: mode === "assignee" ? (targetGroupId ?? bar.assigneeId) : bar.assigneeId,
