@@ -1692,7 +1692,7 @@ export default function SpreadsheetGrid({
       {/* 装置予定ダイアログ */}
       {dialog && init && (
         <ScheduleDialog
-          mode={dialog.mode} initial={init}
+          mode={dialog.mode} gridMode={mode} initial={init}
           devices={devices} tasks={tasks} assignees={assignees} locations={locations}
           minDate={dates[0]} maxDate={dates[totalCols > 0 ? dates.length - 1 : 0]}
           onSave={data => dialog.mode === "new" ? addBar(data) : editBar(dialog.barId, data)}
