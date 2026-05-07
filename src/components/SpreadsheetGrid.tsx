@@ -443,6 +443,8 @@ export default function SpreadsheetGrid({
   const dragSelRef          = useRef<DragSel | null>(null)
   const selectedCellRef     = useRef<{ row: number; col: number } | null>(null)
   const rectCacheRef        = useRef<DOMRect | null>(null)
+  const sonarTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [sonarTargetId, setSonarTargetId] = useState<string | null>(null)
   /* ── フェッチキャッシュ refs ── */
   const fetchedRangesRef    = useRef<FetchRange[]>([])
   const seedingRef          = useRef(false)
@@ -566,6 +568,11 @@ export default function SpreadsheetGrid({
         }
 
         onScrollToTargetDone?.()
+
+        // ソナーエフェクト開始
+        if (sonarTimerRef.current) clearTimeout(sonarTimerRef.current)
+        setSonarTargetId(scrollToTarget.barId)
+        sonarTimerRef.current = setTimeout(() => setSonarTargetId(null), 2200)
       })
     })
     return () => { cancelAnimationFrame(raf0); cancelAnimationFrame(raf1) }
@@ -1579,6 +1586,29 @@ export default function SpreadsheetGrid({
               opacity: 0.8, pointerEvents: "none",
             }} />
           ))}
+
+          {/* ━━━ ソナーエフェクト ━━━ */}
+          {sonarTargetId && visibleBars
+            .filter(b => b.id === sonarTargetId)
+            .flatMap(bar => {
+              const c    = taskColorMap[bar.taskId] ?? { bg: bar.colorBg, fg: bar.colorFg }
+              const barW = (bar.viewEndCol - bar.viewStartCol + 1) * CELL_SIZE
+              const cx   = ROW_HDR_W + bar.viewStartCol * CELL_SIZE + barW / 2
+              const cy   = dataTop   + bar.absoluteRow  * CELL_SIZE + CELL_SIZE / 2
+              const r    = Math.max(barW / 2, 14)
+              return [0, 380, 760].map(delay => (
+                <div key={delay} style={{
+                  position: "absolute",
+                  left: cx - r, top: cy - r,
+                  width: r * 2, height: r * 2,
+                  borderRadius: "50%",
+                  border: `2.5px solid ${c.bg}`,
+                  zIndex: 12, pointerEvents: "none",
+                  animation: `sonar-ring 1100ms cubic-bezier(0,0.4,0.6,1) ${delay}ms both`,
+                }} />
+              ))
+            })
+          }
 
           {/* 選択セルオーバーレイ */}
           <div ref={selCellRef} style={{
